@@ -1,0 +1,16 @@
+# Planning docs — keep local, do not publish
+research.md
+spec.md
+plan.md
+
+# Standard
+node_modules/
+.DS_Store
+dist/
+target/
+*.log
+.env
+.env.local
+.iii/
+coverage/
+.turbo/
