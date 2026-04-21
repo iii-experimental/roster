@@ -60,7 +60,14 @@ iii.registerFunction(
       role: 'owner',
       granted_at: now,
     };
-    await store.set(roleKey(id, input.owner_id), grant);
+    try {
+      await store.set(roleKey(id, input.owner_id), grant);
+    } catch (err) {
+      // Compensating rollback — engine has no cross-key transactions yet, so
+      // a failed owner grant would leave the workspace unowned.
+      await store.del(workspaceKey(id)).catch(() => {});
+      throw err;
+    }
     return { workspace_id: id };
   },
 );
@@ -68,6 +75,9 @@ iii.registerFunction(
 iii.registerFunction(
   'auth::workspace_get',
   async (input: { workspace_id: string }) => {
+    if (!input.workspace_id) {
+      throw new Error('workspace_get requires workspace_id');
+    }
     const ws = await store.get<Workspace>(workspaceKey(input.workspace_id));
     if (!ws) return { workspace: null };
     return {
@@ -101,7 +111,14 @@ iii.registerFunction(
       created_at: Date.now(),
     };
     await store.set(keyKey(id), record);
-    await store.set(keyLookupKey(hashPrefix(hash)), id);
+    try {
+      await store.set(keyLookupKey(hashPrefix(hash)), id);
+    } catch (err) {
+      // Lookup entry is what verify() uses to find the key — without it, the
+      // record exists but is unusable. Roll back the record write.
+      await store.del(keyKey(id)).catch(() => {});
+      throw err;
+    }
     return { key_id: id, token };
   },
 );
@@ -142,7 +159,11 @@ function isRoleGrant(v: unknown): v is RoleGrant {
 iii.registerFunction(
   'auth::key_list',
   async (input: { workspace_id: string }) => {
-    const all = await store.list<unknown>();
+    // Scoped to the `key:` prefix so we don't scan workspaces + role grants
+    // + lookup entries. Full workspace-prefixed keys (key:<ws>:<id>) would
+    // allow a tighter scan but require a migration; acceptable for now
+    // because key records are typically ~10s-100s per workspace.
+    const all = await store.list<unknown>('key:');
     const keys = all
       .filter(isApiKey)
       .filter((k) => k.workspace_id === input.workspace_id)
@@ -247,7 +268,9 @@ iii.registerFunction(
 iii.registerFunction(
   'auth::role_list',
   async (input: { workspace_id: string }) => {
-    const all = await store.list<unknown>();
+    // role:<workspace_id>:<user_id> keys already carry the workspace prefix,
+    // so list can scan server-side with the exact prefix.
+    const all = await store.list<unknown>(`role:${input.workspace_id}:`);
     const grants = all
       .filter(isRoleGrant)
       .filter((g) => g.workspace_id === input.workspace_id)

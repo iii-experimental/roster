@@ -21,11 +21,18 @@ export function hashPrefix(hash: string): string {
   return hash.slice(0, HASH_PREFIX_LEN);
 }
 
+const HEX_RE = /^[0-9a-fA-F]+$/;
+
 export function timingSafeHexEqual(a: string, b: string): boolean {
+  // Buffer.from(str, 'hex') silently drops non-hex chars, so two malformed
+  // strings both produce empty buffers and would compare equal. Validate
+  // strict hex + non-empty + matching length up front.
   if (a.length !== b.length || a.length === 0) return false;
+  if (a.length % 2 !== 0) return false;
+  if (!HEX_RE.test(a) || !HEX_RE.test(b)) return false;
   const ab = Buffer.from(a, 'hex');
   const bb = Buffer.from(b, 'hex');
-  if (ab.length !== bb.length) return false;
+  if (ab.length !== bb.length || ab.length === 0) return false;
   return timingSafeEqual(ab, bb);
 }
 

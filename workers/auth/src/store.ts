@@ -48,8 +48,10 @@ export function makeStore(trigger: Trigger) {
       | T
       | null) ?? null;
 
-  const list = async <T>(): Promise<T[]> => {
-    const v = await trigger({ function_id: 'state::list', payload: { scope: SCOPE } });
+  const list = async <T>(prefix?: string): Promise<T[]> => {
+    const payload: Record<string, unknown> = { scope: SCOPE };
+    if (prefix) payload.prefix = prefix;
+    const v = await trigger({ function_id: 'state::list', payload });
     return Array.isArray(v) ? (v as T[]) : [];
   };
 
