@@ -57,8 +57,10 @@ export function makeStore(trigger: Trigger) {
       | T
       | null) ?? null;
 
-  const list = async <T>(): Promise<T[]> => {
-    const v = await trigger({ function_id: 'state::list', payload: { scope: SCOPE } });
+  const list = async <T>(prefix?: string): Promise<T[]> => {
+    const payload: Record<string, unknown> = { scope: SCOPE };
+    if (prefix) payload.prefix = prefix;
+    const v = await trigger({ function_id: 'state::list', payload });
     return Array.isArray(v) ? (v as T[]) : [];
   };
 
@@ -70,13 +72,15 @@ export function makeStore(trigger: Trigger) {
     saveBudget: (b: Budget) => set(budgetKey(b.id), b),
     deleteBudget: (id: string) => del(budgetKey(id)),
     listAll: async (): Promise<Budget[]> => {
-      const all = await list<Budget>();
+      // Server-side prefix filter keeps the budget list cheap even when
+      // spend_log:* entries dominate the scope.
+      const all = await list<Budget>('budget:');
       return all.filter((v) => v && typeof v === 'object' && 'ceiling_usd' in v);
     },
     saveSpendLog: (id: string, periodStartMs: number, entry: SpendLogEntry) =>
       set(spendLogKey(id, periodStartMs), entry),
     listSpendLogs: async (budgetId: string): Promise<SpendLogEntry[]> => {
-      const all = await list<SpendLogEntry>();
+      const all = await list<SpendLogEntry>(`spend_log:${budgetId}:`);
       return all.filter(
         (e) => e && typeof e === 'object' && 'budget_id' in e && e.budget_id === budgetId,
       );

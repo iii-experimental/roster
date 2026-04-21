@@ -29,6 +29,23 @@ function now(): number {
   return Date.now();
 }
 
+// In-process per-budget mutex. Serializes concurrent record/reset/update
+// operations on the same budget_id so the non-atomic load→mutate→save cycle
+// can't lose updates. Engine-level CAS would be a stronger fix but isn't
+// exposed yet. This is single-process only; horizontal scale needs
+// state-backed locks.
+const locks = new Map<string, Promise<unknown>>();
+async function withBudgetLock<T>(id: string, fn: () => Promise<T>): Promise<T> {
+  const prev = locks.get(id) ?? Promise.resolve();
+  const task = prev.then(fn, fn);
+  locks.set(id, task);
+  try {
+    return await task;
+  } finally {
+    if (locks.get(id) === task) locks.delete(id);
+  }
+}
+
 function requireBudget(b: Budget | null, id: string): Budget {
   if (!b) throw new Error(`budget not found: ${id}`);
   return b;
@@ -144,38 +161,44 @@ iii.registerFunction('budget::get', async (input: { budget_id: string }) => {
 
 iii.registerFunction(
   'budget::update',
-  async (input: { budget_id: string; patch: Partial<Budget> }) => {
-    const ts = now();
-    const current = requireBudget(await store.loadBudget(input.budget_id), input.budget_id);
-    // Block mutation of immutable fields; spent/period windows are managed
-    // internally via record/reset/rollover.
-    const {
-      id: _id,
-      created_at: _created,
-      spent_usd: _spent,
-      period_start_at: _ps,
-      period_resets_at: _pr,
-      ...mutable
-    } = input.patch as Partial<Budget>;
-    const next: Budget = { ...current, ...mutable, updated_at: ts };
-    if (mutable.period && mutable.period !== current.period) {
-      // Period kind changed: archive the current window and re-anchor so the
-      // new period starts at zero spend on a deterministic UTC boundary.
-      await store.saveSpendLog(current.id, current.period_start_at, {
-        budget_id: current.id,
-        period_start: current.period_start_at,
-        period_end: ts,
-        spent_usd: current.spent_usd,
-        records_count: 0,
-      });
-      next.period_start_at = periodStart(mutable.period, ts);
-      next.period_resets_at = nextPeriodStart(mutable.period, next.period_start_at);
-      next.spent_usd = 0;
-      next.alerts = next.alerts.map((a) => ({ ...a, last_fired_period_start: undefined }));
-    }
-    await store.saveBudget(next);
-    return { budget: next };
-  },
+  async (input: { budget_id: string; patch: Partial<Budget> }) =>
+    withBudgetLock(input.budget_id, async () => {
+      const ts = now();
+      const current = requireBudget(await store.loadBudget(input.budget_id), input.budget_id);
+      // Block mutation of immutable fields; spent/period windows are managed
+      // internally via record/reset/rollover.
+      const {
+        id: _id,
+        created_at: _created,
+        spent_usd: _spent,
+        period_start_at: _ps,
+        period_resets_at: _pr,
+        ...mutable
+      } = input.patch as Partial<Budget>;
+      if (mutable.ceiling_usd !== undefined) {
+        if (!Number.isFinite(mutable.ceiling_usd) || mutable.ceiling_usd <= 0) {
+          throw new Error('ceiling_usd must be a positive finite number');
+        }
+      }
+      const next: Budget = { ...current, ...mutable, updated_at: ts };
+      if (mutable.period && mutable.period !== current.period) {
+        // Period kind changed: archive the current window and re-anchor so the
+        // new period starts at zero spend on a deterministic UTC boundary.
+        await store.saveSpendLog(current.id, current.period_start_at, {
+          budget_id: current.id,
+          period_start: current.period_start_at,
+          period_end: ts,
+          spent_usd: current.spent_usd,
+          records_count: 0,
+        });
+        next.period_start_at = periodStart(mutable.period, ts);
+        next.period_resets_at = nextPeriodStart(mutable.period, next.period_start_at);
+        next.spent_usd = 0;
+        next.alerts = next.alerts.map((a) => ({ ...a, last_fired_period_start: undefined }));
+      }
+      await store.saveBudget(next);
+      return { budget: next };
+    }),
 );
 
 iii.registerFunction('budget::delete', async (input: { budget_id: string }) => {
@@ -225,7 +248,8 @@ iii.registerFunction(
     agent_id?: string;
     tokens_in?: number;
     tokens_out?: number;
-  }) => {
+  }) =>
+    withBudgetLock(input.budget_id, async () => {
     if (!Number.isFinite(input.cost_usd) || input.cost_usd < 0) {
       throw new Error('cost_usd must be >= 0');
     }
@@ -275,35 +299,37 @@ iii.registerFunction(
     }
 
     return { spent_usd: b.spent_usd, remaining_usd: b.ceiling_usd - b.spent_usd };
-  },
+  }),
 );
 
-iii.registerFunction('budget::reset', async (input: { budget_id: string }) => {
-  const ts = now();
-  const b = requireBudget(await store.loadBudget(input.budget_id), input.budget_id);
-  const previous = b.spent_usd;
+iii.registerFunction('budget::reset', async (input: { budget_id: string }) =>
+  withBudgetLock(input.budget_id, async () => {
+    const ts = now();
+    const b = requireBudget(await store.loadBudget(input.budget_id), input.budget_id);
+    const previous = b.spent_usd;
 
-  await store.saveSpendLog(b.id, b.period_start_at, {
-    budget_id: b.id,
-    period_start: b.period_start_at,
-    period_end: ts,
-    spent_usd: previous,
-    records_count: 0,
-  });
+    await store.saveSpendLog(b.id, b.period_start_at, {
+      budget_id: b.id,
+      period_start: b.period_start_at,
+      period_end: ts,
+      spent_usd: previous,
+      records_count: 0,
+    });
 
-  const start = periodStart(b.period, ts);
-  const reset: Budget = {
-    ...b,
-    spent_usd: 0,
-    period_start_at: start,
-    period_resets_at: nextPeriodStart(b.period, start),
-    updated_at: ts,
-    // Allow alerts to re-fire in the new period.
-    alerts: b.alerts.map((a) => ({ ...a, last_fired_period_start: undefined })),
-  };
-  await store.saveBudget(reset);
-  return { budget_id: b.id, previous_spent_usd: previous };
-});
+    const start = periodStart(b.period, ts);
+    const reset: Budget = {
+      ...b,
+      spent_usd: 0,
+      period_start_at: start,
+      period_resets_at: nextPeriodStart(b.period, start),
+      updated_at: ts,
+      // Allow alerts to re-fire in the new period.
+      alerts: b.alerts.map((a) => ({ ...a, last_fired_period_start: undefined })),
+    };
+    await store.saveBudget(reset);
+    return { budget_id: b.id, previous_spent_usd: previous };
+  }),
+);
 
 iii.registerFunction(
   'budget::alert_set',

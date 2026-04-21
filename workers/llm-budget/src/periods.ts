@@ -62,7 +62,9 @@ export function daysElapsed(start: number, now: number): number {
   return Math.max(1, (now - start) / MS_PER_DAY);
 }
 
-// Full days remaining in the current period from `now` until `resetsAt`.
+// Fractional days remaining in the current period from `now` until
+// `resetsAt`. Fractional output feeds directly into the forecast math in
+// budget::forecast (no rounding needed there).
 export function daysRemaining(now: number, resetsAt: number): number {
   return Math.max(0, (resetsAt - now) / MS_PER_DAY);
 }
