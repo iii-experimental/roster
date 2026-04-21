@@ -55,6 +55,10 @@ iii.registerFunction('provider-openai::complete', async (input: CompleteInput): 
   if (!key) {
     return { ok: false, text: '', model: input.model, error: 'OPENAI_API_KEY not set' };
   }
+  const messages = buildMessages(input);
+  if (messages.length === 0) {
+    return { ok: false, text: '', model: input.model, error: 'no prompt or messages provided' };
+  }
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
@@ -65,7 +69,7 @@ iii.registerFunction('provider-openai::complete', async (input: CompleteInput): 
       headers: { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model: input.model.replace(/^openai\//, '') || DEFAULT_MODEL,
-        messages: buildMessages(input),
+        messages,
         max_tokens: input.max_tokens ?? 1024,
         temperature: input.temperature,
       }),
@@ -101,8 +105,11 @@ iii.registerFunction('provider-openai::complete', async (input: CompleteInput): 
 iii.registerFunction('provider-openai::list_models', async () => {
   const key = process.env.OPENAI_API_KEY;
   if (!key) return { ok: false, models: [], error: 'OPENAI_API_KEY not set' };
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 10_000);
   try {
     const resp = await fetch(`${BASE}/models`, {
+      signal: controller.signal,
       headers: { 'Authorization': `Bearer ${key}` },
     });
     if (!resp.ok) return { ok: false, models: [], error: `http ${resp.status}` };
@@ -110,6 +117,8 @@ iii.registerFunction('provider-openai::list_models', async () => {
     return { ok: true, models: data.data ?? [] };
   } catch (err) {
     return { ok: false, models: [], error: String(err) };
+  } finally {
+    clearTimeout(timer);
   }
 });
 

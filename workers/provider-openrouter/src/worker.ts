@@ -55,6 +55,10 @@ iii.registerFunction('provider-openrouter::complete', async (input: CompleteInpu
   if (!key) {
     return { ok: false, text: '', model: input.model, error: 'OPENROUTER_API_KEY not set' };
   }
+  const messages = buildMessages(input);
+  if (messages.length === 0) {
+    return { ok: false, text: '', model: input.model, error: 'no prompt or messages provided' };
+  }
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
@@ -70,7 +74,7 @@ iii.registerFunction('provider-openrouter::complete', async (input: CompleteInpu
       },
       body: JSON.stringify({
         model: input.model.replace(/^openrouter\//, ''),
-        messages: buildMessages(input),
+        messages,
         max_tokens: input.max_tokens ?? 512,
         temperature: input.temperature,
       }),
@@ -110,8 +114,11 @@ iii.registerFunction('provider-openrouter::complete', async (input: CompleteInpu
 iii.registerFunction('provider-openrouter::list_models', async () => {
   const key = process.env.OPENROUTER_API_KEY;
   if (!key) return { ok: false, models: [], error: 'OPENROUTER_API_KEY not set' };
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 10_000);
   try {
     const resp = await fetch('https://openrouter.ai/api/v1/models', {
+      signal: controller.signal,
       headers: { 'Authorization': `Bearer ${key}` },
     });
     if (!resp.ok) return { ok: false, models: [], error: `http ${resp.status}` };
@@ -119,6 +126,8 @@ iii.registerFunction('provider-openrouter::list_models', async () => {
     return { ok: true, models: data.data ?? [] };
   } catch (err) {
     return { ok: false, models: [], error: String(err) };
+  } finally {
+    clearTimeout(timer);
   }
 });
 

@@ -47,12 +47,16 @@ iii.registerFunction('provider-anthropic::complete', async (input: CompleteInput
   if (!key) {
     return { ok: false, text: '', model: input.model, error: 'ANTHROPIC_API_KEY not set' };
   }
+  const messages = input.messages?.length
+    ? input.messages
+    : input.prompt ? [{ role: 'user', content: input.prompt }] : [];
+  if (messages.length === 0) {
+    return { ok: false, text: '', model: input.model, error: 'no prompt or messages provided' };
+  }
 
   const body: Record<string, unknown> = {
     model: input.model.replace(/^anthropic\//, '') || DEFAULT_MODEL,
-    messages: input.messages?.length
-      ? input.messages
-      : input.prompt ? [{ role: 'user', content: input.prompt }] : [],
+    messages,
     max_tokens: input.max_tokens ?? 1024,
   };
   if (input.system) body.system = input.system;
