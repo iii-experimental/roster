@@ -4,7 +4,6 @@ import { existsSync } from 'node:fs';
 import { registerWorker, Logger } from 'iii-sdk';
 import {
   generateToken,
-  hashPrefix,
   hashToken,
   loadSecret,
   timingSafeHexEqual,
@@ -26,6 +25,10 @@ for (const p of ['.env', '/workspace/.env', '/workspace/../.env']) {
 }
 
 const SECRET = loadSecret();
+
+// Verify-path cache window for last_used_at writes. Longer = fewer writes,
+// coarser telemetry. 5 min is the standard "this key is still in use" ping.
+const LAST_USED_WRITE_INTERVAL_MS = 5 * 60 * 1000;
 
 const iii = registerWorker(
   process.env.III_URL ?? 'ws://localhost:49134',
@@ -112,7 +115,7 @@ iii.registerFunction(
     };
     await store.set(keyKey(id), record);
     try {
-      await store.set(keyLookupKey(hashPrefix(hash)), id);
+      await store.set(keyLookupKey(hash), id);
     } catch (err) {
       // Lookup entry is what verify() uses to find the key — without it, the
       // record exists but is unusable. Roll back the record write.
@@ -201,8 +204,7 @@ iii.registerFunction(
       return { valid: false, reason: 'missing token' };
     }
     const incoming = hashToken(SECRET, input.token);
-    const prefix = hashPrefix(incoming);
-    const keyId = await store.get<string>(keyLookupKey(prefix));
+    const keyId = await store.get<string>(keyLookupKey(incoming));
     if (!keyId) return { valid: false, reason: 'unknown token' };
     const record = await store.get<ApiKey>(keyKey(keyId));
     if (!record) return { valid: false, reason: 'unknown token' };
@@ -221,8 +223,23 @@ iii.registerFunction(
         return { valid: false, reason: 'insufficient role' };
       }
     }
-    record.last_used_at = Date.now();
-    await store.set(keyKey(record.id), record);
+    // Throttle last_used_at writes: verify is the hot path, a state::set on
+    // every successful auth would chain every request through state-worker
+    // latency. Skip when we've already updated in the last 5 minutes; fire-
+    // and-forget when we do update so verify never blocks on the write.
+    const nowMs = Date.now();
+    const lastUsedFresh =
+      typeof record.last_used_at === 'number' &&
+      nowMs - record.last_used_at < LAST_USED_WRITE_INTERVAL_MS;
+    if (!lastUsedFresh) {
+      const next: ApiKey = { ...record, last_used_at: nowMs };
+      void store.set(keyKey(record.id), next).catch((err) => {
+        log.warn('last_used_at update failed', {
+          key_id: record.id,
+          reason: String(err),
+        });
+      });
+    }
     return {
       valid: true,
       key_id: record.id,
@@ -238,6 +255,15 @@ iii.registerFunction(
     const role = assertRole(input.role);
     const ws = await store.get<Workspace>(workspaceKey(input.workspace_id));
     if (!ws) throw new Error(`workspace not found: ${input.workspace_id}`);
+    // Protect the workspace owner: a plain role_grant must not demote them.
+    // Ownership transfer is a dedicated flow (auth::workspace_transfer, TBD)
+    // that atomically updates workspace.owner_id and the grant.
+    if (ws.owner_id === input.user_id && role !== 'owner') {
+      throw new Error(
+        `cannot demote workspace owner ${input.user_id} via role_grant; ` +
+          `use an explicit ownership transfer flow`,
+      );
+    }
     const grant: RoleGrant = {
       workspace_id: input.workspace_id,
       user_id: input.user_id,

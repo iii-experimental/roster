@@ -30,7 +30,9 @@ export type RoleGrant = {
 
 export const workspaceKey = (id: string) => `workspace:${id}`;
 export const keyKey = (id: string) => `key:${id}`;
-export const keyLookupKey = (prefix: string) => `key_lookup:${prefix}`;
+// Lookup keyed on the full hmac hash, not a 12-char prefix, so two keys
+// that share a prefix can't overwrite each other's lookup entry.
+export const keyLookupKey = (fullHash: string) => `key_lookup:${fullHash}`;
 export const roleKey = (workspaceId: string, userId: string) =>
   `role:${workspaceId}:${userId}`;
 
