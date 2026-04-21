@@ -196,30 +196,7 @@ ANTHROPIC_API_KEY=sk-ant-...
 
 Worker entry point reads them through `dotenv/config`. `iii.worker.yaml` does not contain secret values — ever.
 
-## Troubleshooting
-
-**`iii worker list` shows every worker as `stopped` right after boot.**
-Cosmetic. Functions stay registered. `iii worker restart <name>` refreshes the list. If triggers still fail, check `iii worker logs <name>` — the process is usually alive.
-
-**Local-path workers never leave `stopped` on iii v0.11.2 with `tokio runtime drop` panic.**
-Upstream [iii-hq/iii#1524](https://github.com/iii-hq/iii/issues/1524). Pin iii to v0.11.0 until fix ships: `iii update --version 0.11.0`. Registry workers (`- name: foo` with no `worker_path`) boot fine either way.
-
-**`router::decide` errors with `state envelope shape`.**
-Upstream fix pending for `llm-router` on iii v0.11.2. Two options: (a) clone the workers repo, patch `llm-router/src/state.rs` to read the bare-array shape, point `worker_path` at your local checkout, or (b) wait for the registry version.
-
-**Browser loads but board stays empty.**
-Check `roster-orchestrator` is running (`iii worker list`). It rebuilds `state:roster:ui::board` from `issues` / `runtimes` scopes. No orchestrator = no ops list = empty DOM. Also check browser console for a WebSocket connection to `ws://localhost:49134`.
-
-**`provider-<name>::complete` returns `{ ok: false, error: "... API key ..."}`.**
-Copy the right `.env.example` into `.env` at `workers/provider-<name>/`. See [`docs/providers.md`](./docs/providers.md) for which env var each worker reads. `iii worker restart provider-<name>` after editing.
-
-**CLI provider worker fails to find `claude` / `codex` / etc.**
-`provider-cli` shells out via `shell::exec`. The binary must be on `$PATH` inside the worker's microVM, not just your host shell. Either install the CLI system-wide or bake it into the runtime.
-
-**Smoke test times out with `issue never reached terminal status`.**
-Most common cause: no online runtime. Run `iii trigger --function-id 'runtimes::list' --payload '{}'` — the `agent-daemon` worker needs to be running for it to register a runtime and claim issues. Start with `iii worker restart agent-daemon`, then re-run `npm run smoke`.
-
-### Known limitations
+## Known limitations
 
 - `iii-worker-manager` RBAC port (49135) is not wired into the demo config; current setup connects the browser straight to 49134. Add an `iii-worker-manager` entry before exposing publicly.
 - `sandbox` v1 is a host-scoped directory per sandbox. Nested-microVM spawn (full per-run isolation) waits for the engine to expose worker management (`workers::add`, `workers::exec`, `workers::remove`) as iii functions. The `iii worker exec` CLI shipped in iii#1514 handles the runtime side but isn't reachable from inside a worker without an engine-level function.
