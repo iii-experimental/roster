@@ -24,22 +24,13 @@ type Msg = {
   attachments?: string[];
 };
 
-async function stateSet(key: string, value: unknown) {
-  await iii.trigger({ function_id: 'state::set', payload: { scope: SCOPE, key, value } });
-}
+const stateSet = (key: string, value: unknown) =>
+  iii.trigger({ function_id: 'state::set', payload: { scope: SCOPE, key, value } });
 
-async function stateGet<T>(key: string): Promise<T | null> {
-  const v = (await iii.trigger({ function_id: 'state::get', payload: { scope: SCOPE, key } })) as T | null;
-  return v ?? null;
-}
-
-async function stateList<T>(prefix: string): Promise<T[]> {
-  const v = (await iii.trigger({ function_id: 'state::list', payload: { scope: SCOPE, prefix } })) as
-    | { values?: T[] } | T[] | null;
-  if (!v) return [];
-  if (Array.isArray(v)) return v;
-  return v.values ?? [];
-}
+const stateList = async <T>(prefix: string): Promise<T[]> => {
+  const v = await iii.trigger({ function_id: 'state::list', payload: { scope: SCOPE, prefix } });
+  return Array.isArray(v) ? (v as T[]) : [];
+};
 
 iii.registerFunction(
   'thread::open',

@@ -44,25 +44,13 @@ async function publishView(view: 'board' | 'agents' | 'runtimes' | 'settings' | 
   });
 }
 
-async function listIssues(): Promise<Issue[]> {
-  const v = (await iii.trigger({
-    function_id: 'state::list',
-    payload: { scope: 'issues', prefix: 'issue:' },
-  })) as { values?: Issue[] } | Issue[] | null;
-  if (!v) return [];
-  if (Array.isArray(v)) return v;
-  return v.values ?? [];
+async function listScope<T>(scope: string, prefix: string): Promise<T[]> {
+  const v = await iii.trigger({ function_id: 'state::list', payload: { scope, prefix } });
+  return Array.isArray(v) ? (v as T[]) : [];
 }
 
-async function listRuntimes(): Promise<Runtime[]> {
-  const v = (await iii.trigger({
-    function_id: 'state::list',
-    payload: { scope: 'runtimes', prefix: 'runtime:' },
-  })) as { values?: Runtime[] } | Runtime[] | null;
-  if (!v) return [];
-  if (Array.isArray(v)) return v;
-  return v.values ?? [];
-}
+const listIssues = () => listScope<Issue>('issues', 'issue:');
+const listRuntimes = () => listScope<Runtime>('runtimes', 'runtime:');
 
 function buildBoardOps(issues: Issue[]): Op[] {
   const columns: Record<string, Issue[]> = {

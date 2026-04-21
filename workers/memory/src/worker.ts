@@ -22,26 +22,19 @@ process.on('unhandledRejection', (reason) => {
   log.error('memory unhandled rejection', { reason: String(reason) });
 });
 
-async function stateSet(key: string, value: unknown) {
-  await iii.trigger({ function_id: 'state::set', payload: { scope: SCOPE, key, value } });
-}
+const stateSet = (key: string, value: unknown) =>
+  iii.trigger({ function_id: 'state::set', payload: { scope: SCOPE, key, value } });
 
-async function stateGet<T>(key: string): Promise<T | null> {
-  const v = (await iii.trigger({ function_id: 'state::get', payload: { scope: SCOPE, key } })) as T | null;
-  return v ?? null;
-}
+const stateGet = async <T>(key: string): Promise<T | null> =>
+  ((await iii.trigger({ function_id: 'state::get', payload: { scope: SCOPE, key } })) as T | null) ?? null;
 
-async function stateList<T>(): Promise<T[]> {
-  const v = (await iii.trigger({ function_id: 'state::list', payload: { scope: SCOPE } })) as
-    | { values?: T[] } | T[] | null;
-  if (!v) return [];
-  if (Array.isArray(v)) return v;
-  return v.values ?? [];
-}
+const stateList = async <T>(): Promise<T[]> => {
+  const v = await iii.trigger({ function_id: 'state::list', payload: { scope: SCOPE } });
+  return Array.isArray(v) ? (v as T[]) : [];
+};
 
-async function stateDelete(key: string) {
-  await iii.trigger({ function_id: 'state::delete', payload: { scope: SCOPE, key } });
-}
+const stateDelete = (key: string) =>
+  iii.trigger({ function_id: 'state::delete', payload: { scope: SCOPE, key } });
 
 const STOP_WORDS = new Set([
   'a', 'an', 'and', 'are', 'as', 'at', 'be', 'but', 'by', 'for', 'if', 'in', 'into',

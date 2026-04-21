@@ -24,35 +24,19 @@ type Issue = {
   updated_at: number;
 };
 
-const now = () => Date.now();
+const stateSet = (key: string, value: unknown) =>
+  iii.trigger({ function_id: 'state::set', payload: { scope: STATE_SCOPE, key, value } });
 
-async function stateSet(key: string, value: unknown) {
-  await iii.trigger({
-    function_id: 'state::set',
-    payload: { scope: STATE_SCOPE, key, value },
-  });
-}
+const stateGet = async <T>(key: string): Promise<T | null> =>
+  ((await iii.trigger({ function_id: 'state::get', payload: { scope: STATE_SCOPE, key } })) as T | null) ?? null;
 
-async function stateGet<T>(key: string): Promise<T | null> {
-  const v = (await iii.trigger({
-    function_id: 'state::get',
-    payload: { scope: STATE_SCOPE, key },
-  })) as T | null;
-  return v ?? null;
-}
-
-async function stateList<T>(prefix: string): Promise<T[]> {
-  const v = (await iii.trigger({
-    function_id: 'state::list',
-    payload: { scope: STATE_SCOPE, prefix },
-  })) as { values?: T[] } | T[] | null;
-  if (!v) return [];
-  if (Array.isArray(v)) return v;
-  return v.values ?? [];
-}
+const stateList = async <T>(prefix: string): Promise<T[]> => {
+  const v = await iii.trigger({ function_id: 'state::list', payload: { scope: STATE_SCOPE, prefix } });
+  return Array.isArray(v) ? (v as T[]) : [];
+};
 
 async function logStatus(issue_id: string, from: Status, to: Status, reason?: string) {
-  const ts = now();
+  const ts = Date.now();
   await stateSet(`issue_status_log:${issue_id}:${ts}`, { issue_id, from, to, reason, ts });
 }
 
@@ -74,8 +58,8 @@ iii.registerFunction(
       status: 'open',
       labels: input.labels ?? [],
       creator_id: input.creator_id ?? 'user',
-      created_at: now(),
-      updated_at: now(),
+      created_at: Date.now(),
+      updated_at: Date.now(),
     };
     await stateSet(`issue:${id}`, issue);
     log.info('issue created', { id, title: input.title });
@@ -92,7 +76,7 @@ iii.registerFunction(
     issue.assignee_id = input.agent_id;
     issue.runtime_id = input.runtime_id;
     issue.status = 'claimed';
-    issue.updated_at = now();
+    issue.updated_at = Date.now();
     await stateSet(`issue:${input.issue_id}`, issue);
     await logStatus(input.issue_id, prev, 'claimed');
     return { ok: true };
@@ -106,7 +90,7 @@ iii.registerFunction(
     if (!issue) throw new Error(`issue not found: ${input.issue_id}`);
     const prev = issue.status;
     issue.status = input.status;
-    issue.updated_at = now();
+    issue.updated_at = Date.now();
     await stateSet(`issue:${input.issue_id}`, issue);
     await logStatus(input.issue_id, prev, input.status, input.reason);
     return { ok: true, prev, next: input.status };

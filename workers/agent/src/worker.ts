@@ -1,11 +1,10 @@
 import 'dotenv/config';
-import { registerWorker, Logger } from 'iii-sdk';
 import { config as dotenvConfig } from 'dotenv';
 import { existsSync } from 'node:fs';
+import { registerWorker, Logger } from 'iii-sdk';
 
-// Fallback: dotenv/config reads ./.env relative to cwd. When the worker runs
-// inside a microVM with the project mounted at /workspace, .env lives there.
-// Try a few common locations so secrets reach the process regardless of cwd.
+// microVM mounts the project at /workspace; cwd inside the VM isn't always the
+// workspace root, so try the common spots.
 for (const p of ['.env', '/workspace/.env', '/workspace/../.env']) {
   if (existsSync(p)) dotenvConfig({ path: p, override: false });
 }
@@ -21,8 +20,6 @@ process.on('unhandledRejection', (reason) => {
 });
 
 const SCOPE = 'agents';
-const MAX_ITERATIONS = 25;
-const SUMMARIZE_THRESHOLD = 40;
 
 type AgentDef = {
   id: string;
@@ -58,26 +55,16 @@ type Run = {
   budget_used_usd: number;
 };
 
-async function stateSet(scope: string, key: string, value: unknown) {
-  await iii.trigger({ function_id: 'state::set', payload: { scope, key, value } });
-}
+type ShellResult = { stdout: string; stderr: string; code: number; elapsed_ms: number };
 
-async function stateGet<T>(scope: string, key: string): Promise<T | null> {
-  const v = (await iii.trigger({ function_id: 'state::get', payload: { scope, key } })) as T | null;
-  return v ?? null;
-}
+const stateSet = (scope: string, key: string, value: unknown) =>
+  iii.trigger({ function_id: 'state::set', payload: { scope, key, value } });
 
-async function callShell(payload: Record<string, unknown>): Promise<{
-  stdout: string;
-  stderr: string;
-  code: number;
-  elapsed_ms: number;
-}> {
-  return (await iii.trigger({
-    function_id: 'shell::exec',
-    payload,
-  })) as { stdout: string; stderr: string; code: number; elapsed_ms: number };
-}
+const stateGet = async <T>(scope: string, key: string): Promise<T | null> =>
+  ((await iii.trigger({ function_id: 'state::get', payload: { scope, key } })) as T | null) ?? null;
+
+const callShell = (payload: Record<string, unknown>) =>
+  iii.trigger({ function_id: 'shell::exec', payload }) as Promise<ShellResult>;
 
 iii.registerFunction(
   'agent::providers_detect',
@@ -188,10 +175,8 @@ async function executeRun(run: Run, agent: AgentDef) {
     `Issue: ${issue.issue.title}\n\n${issue.issue.body}\n\n` +
     `Respond concisely with what you would do. No tool use in this phase.`;
 
-  // Ask the registry-owned llm-router to pick a model for this request. Router
-  // is unopinionated: catalog + policies come from runtime state, not hardcoded
-  // in roster. If router is unavailable, fall back to the agent's declared
-  // provider without blocking the run.
+  // router is unopinionated: policies + catalog live in runtime state. If it
+  // isn't available, fall back to the agent's declared provider.
   let decision: { model?: string; reason?: string; policy_id?: string } | null = null;
   try {
     decision = (await iii.trigger({
@@ -203,29 +188,25 @@ async function executeRun(run: Run, agent: AgentDef) {
         prompt,
         tags: [agent.provider, ...(agent.capabilities ?? [])],
       },
-    })) as { model?: string; reason?: string; policy_id?: string };
+    })) as typeof decision;
   } catch (err) {
     log.warn('router::decide skipped', { error: String(err) });
   }
 
-  // Convention: model ids carry provider as a prefix ("claude/opus", "echo/tiny").
-  // When the router returns a model, use its provider half; otherwise fall back
-  // to the agent's declared provider.
-  const modelProvider =
-    decision?.model && decision.model.includes('/')
-      ? decision.model.split('/')[0]
-      : agent.provider;
-  const effectiveProvider = modelProvider ?? agent.provider;
+  // Model ids look like "<provider>/<slug>" (e.g. "echo/tiny", "openrouter/openai/gpt-4o-mini").
+  const effectiveProvider = decision?.model?.split('/')[0] ?? agent.provider;
   const turnStart = Date.now();
-  const result = await callProvider(effectiveProvider, prompt, decision?.model).catch((err) => ({
-    ok: false as const,
-    error: String(err),
-    stdout: '',
-    stderr: String(err),
-    code: -1,
-  }));
+  const result = await callProvider(effectiveProvider, prompt, decision?.model).catch(
+    (err): ProviderResult => ({
+      ok: false,
+      error: String(err),
+      stdout: '',
+      stderr: String(err),
+      code: -1,
+    }),
+  );
 
-  const answer = 'ok' in result && result.ok ? result.stdout : `[provider error] ${result.stderr}`;
+  const answer = result.ok ? result.stdout : `[provider error] ${result.stderr}`;
 
   if (decision?.model) {
     iii
@@ -233,7 +214,7 @@ async function executeRun(run: Run, agent: AgentDef) {
         function_id: 'router::health_update',
         payload: {
           model: decision.model,
-          available: 'ok' in result && result.ok,
+          available: result.ok,
           latency_p99_ms: Date.now() - turnStart,
         },
       })
@@ -272,33 +253,34 @@ type ProviderResult =
   | { ok: true; stdout: string; stderr: string; code: number }
   | { ok: false; stdout: string; stderr: string; code: number; error: string };
 
-async function callProvider(provider: string, prompt: string, model?: string): Promise<ProviderResult> {
-  const providers: Record<string, (p: string, m?: string) => Promise<ProviderResult>> = {
-    claude: claudeAdapter,
-    codex: codexAdapter,
-    opencode: opencodeAdapter,
-    openrouter: openrouterAdapter,
-    echo: echoAdapter,
-  };
-  const fn = providers[provider];
-  if (!fn) throw new Error(`unknown provider: ${provider}`);
-  return await fn(prompt, model);
+type ProviderFn = (prompt: string, model?: string) => Promise<ProviderResult>;
+
+// A CLI-backed provider just runs a binary via shell::exec. Each entry lists
+// the bin and its argv factory for the single-prompt form.
+const CLI_PROVIDERS: Record<string, { bin: string; args: (prompt: string) => string[] }> = {
+  claude: { bin: 'claude', args: (p) => ['--print', p] },
+  codex: { bin: 'codex', args: (p) => ['exec', p] },
+  opencode: { bin: 'opencode', args: (p) => ['run', p] },
+};
+
+async function cliAdapter(bin: string, args: string[]): Promise<ProviderResult> {
+  const { path } = (await iii.trigger({
+    function_id: 'shell::which',
+    payload: { bin },
+  })) as { path: string | null };
+  if (!path) {
+    return { ok: false, error: `${bin} CLI not found`, stdout: '', stderr: 'not installed', code: 127 };
+  }
+  const res = await callShell({ cmd: bin, args, timeout_ms: 120_000 });
+  return { ok: res.code === 0, stdout: res.stdout, stderr: res.stderr, code: res.code };
 }
 
 async function openrouterAdapter(prompt: string, model?: string): Promise<ProviderResult> {
   const key = process.env.OPENROUTER_API_KEY;
   if (!key) {
-    return {
-      ok: false,
-      error: 'OPENROUTER_API_KEY not set',
-      stdout: '',
-      stderr: 'missing key',
-      code: 1,
-    };
+    return { ok: false, error: 'OPENROUTER_API_KEY not set', stdout: '', stderr: 'missing key', code: 1 };
   }
-  // Model convention: router returns "openrouter/anthropic/claude-sonnet-4". Strip
-  // the leading "openrouter/" to get the provider/model slug OpenRouter expects.
-  const modelSlug = (model ?? 'openrouter/openai/gpt-4o-mini').replace(/^openrouter\//, '');
+  const slug = (model ?? 'openrouter/openai/gpt-4o-mini').replace(/^openrouter\//, '');
   try {
     const resp = await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST',
@@ -309,65 +291,35 @@ async function openrouterAdapter(prompt: string, model?: string): Promise<Provid
         'X-Title': 'roster',
       },
       body: JSON.stringify({
-        model: modelSlug,
+        model: slug,
         messages: [{ role: 'user', content: prompt }],
         max_tokens: 512,
       }),
     });
     if (!resp.ok) {
-      const text = await resp.text();
-      return { ok: false, error: `http ${resp.status}`, stdout: '', stderr: text, code: resp.status };
+      return { ok: false, error: `http ${resp.status}`, stdout: '', stderr: await resp.text(), code: resp.status };
     }
-    const data = (await resp.json()) as {
-      choices?: { message?: { content?: string } }[];
-      usage?: { prompt_tokens?: number; completion_tokens?: number; total_cost?: number };
-    };
-    const content = data.choices?.[0]?.message?.content ?? '';
-    return { ok: true, stdout: content, stderr: '', code: 0 };
+    const data = (await resp.json()) as { choices?: { message?: { content?: string } }[] };
+    return { ok: true, stdout: data.choices?.[0]?.message?.content ?? '', stderr: '', code: 0 };
   } catch (err) {
     return { ok: false, error: String(err), stdout: '', stderr: String(err), code: 1 };
   }
 }
 
-async function claudeAdapter(prompt: string): Promise<ProviderResult> {
-  const which = (await iii.trigger({
-    function_id: 'shell::which',
-    payload: { bin: 'claude' },
-  })) as { path: string | null };
-  if (!which.path) {
-    return { ok: false, error: 'claude CLI not found', stdout: '', stderr: 'not installed', code: 127 };
-  }
-  const res = await callShell({
-    cmd: 'claude',
-    args: ['--print', prompt],
-    timeout_ms: 120_000,
-  });
-  return { ok: res.code === 0, stdout: res.stdout, stderr: res.stderr, code: res.code };
+const PROVIDERS: Record<string, ProviderFn> = {
+  openrouter: openrouterAdapter,
+  echo: async (prompt) => ({ ok: true, stdout: `[echo] ${prompt.slice(0, 280)}`, stderr: '', code: 0 }),
+  ...Object.fromEntries(
+    Object.entries(CLI_PROVIDERS).map(
+      ([name, { bin, args }]): [string, ProviderFn] => [name, (p) => cliAdapter(bin, args(p))],
+    ),
+  ),
+};
+
+async function callProvider(provider: string, prompt: string, model?: string): Promise<ProviderResult> {
+  const fn = PROVIDERS[provider];
+  if (!fn) throw new Error(`unknown provider: ${provider}`);
+  return await fn(prompt, model);
 }
 
-async function codexAdapter(prompt: string): Promise<ProviderResult> {
-  const res = await callShell({
-    cmd: 'codex',
-    args: ['exec', prompt],
-    timeout_ms: 120_000,
-  });
-  return { ok: res.code === 0, stdout: res.stdout, stderr: res.stderr, code: res.code };
-}
-
-async function opencodeAdapter(prompt: string): Promise<ProviderResult> {
-  const res = await callShell({
-    cmd: 'opencode',
-    args: ['run', prompt],
-    timeout_ms: 120_000,
-  });
-  return { ok: res.code === 0, stdout: res.stdout, stderr: res.stderr, code: res.code };
-}
-
-async function echoAdapter(prompt: string): Promise<ProviderResult> {
-  return { ok: true, stdout: `[echo] ${prompt.slice(0, 280)}`, stderr: '', code: 0 };
-}
-
-log.info('agent worker registered', {
-  max_iterations: MAX_ITERATIONS,
-  summarize_threshold: SUMMARIZE_THRESHOLD,
-});
+log.info('agent worker registered', { providers: Object.keys(PROVIDERS) });
