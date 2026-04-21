@@ -27,7 +27,7 @@ Assign an issue to an agent. Agent claims it, runs inside its own microVM, calls
 | `agent` | TypeScript | Run lifecycle + reasoning loop. Calls `router::decide` → dispatches by model-id prefix to a `provider-*::complete` worker → `router::health_update`. No inline provider code. |
 | `memory` | TypeScript | `store`, `recall`, `get`, `forget`, `list`, `consolidate`. BM25-only v1. |
 | `shell` | TypeScript | `exec`, `which`, `detect_clis`. Denylist for `rm/sudo/mkfs/...`. |
-| `sandbox` | TypeScript | `create`, `write_files`, `exec`, `read_files`, `destroy`. v1 = host-scoped dir (each worker already in its own microVM). Nested microVM spawn waits on engine public `VmBuilder` API. |
+| `sandbox` | TypeScript | `create`, `write_files`, `exec`, `read_files`, `destroy`. v1 = host-scoped dir per sandbox (each worker is already its own microVM). Nested per-sandbox microVM needs the engine to expose `workers::add`/`exec`/`remove` as iii functions; the CLI path shipped in iii#1514 doesn't reach worker context. |
 | `provider-openrouter` ★ | TypeScript (registry) | `provider-openrouter::complete` — OpenRouter Chat Completions. One key unlocks 200+ models (OpenAI, Anthropic, Google, Meta, Mistral, ...). |
 | `provider-anthropic` ★ | TypeScript (registry) | `provider-anthropic::complete` — Anthropic Messages API direct. `ANTHROPIC_API_KEY`. |
 | `provider-openai` ★ | TypeScript (registry) | `provider-openai::complete` — OpenAI Chat Completions direct. `OPENAI_API_KEY`, `OPENAI_BASE_URL` for Azure/compat endpoints. |
@@ -209,7 +209,7 @@ Worker entry point reads them through `dotenv/config`. `iii.worker.yaml` does no
 ## Known limitations
 
 - `iii-worker-manager` RBAC port (49135) is not yet wired into the demo config; current setup connects the browser straight to 49134. Add an `iii-worker-manager` entry before exposing publicly.
-- `sandbox` v1 is a host-scoped directory per sandbox. Nested-microVM spawn (full per-run isolation) waits for the engine to expose its `VmBuilder` API publicly.
+- `sandbox` v1 is a host-scoped directory per sandbox. Nested-microVM spawn (full per-run isolation) waits for the engine to expose worker management (`workers::add`, `workers::exec`, `workers::remove`) as iii functions. The `iii worker exec` CLI shipped in iii#1514 handles the runtime side but isn't reachable from inside a worker without an engine-level function.
 - `llm-router` needs an upstream fix (state envelope shape changed in v0.11.2). Tracked; swap to the registry version once released.
 - Workers still listed as "stopped" in `iii worker list` after config edits is cosmetic — functions stay registered. Run `iii worker restart <name>` to refresh the list.
 
