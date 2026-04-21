@@ -1,0 +1,74 @@
+workers:
+  - name: iii-observability
+    config:
+      enabled: true
+      service_name: roster
+      service_namespace: experimental
+      exporter: memory
+      memory_max_spans: 10000
+      metrics_enabled: true
+      metrics_exporter: memory
+      logs_enabled: true
+      logs_exporter: memory
+      logs_console_output: true
+      sampling_ratio: 1.0
+
+  - name: iii-state
+    config:
+      adapter:
+        name: kv
+        config:
+          store_method: file_based
+          file_path: ./data/state_store
+
+  - name: iii-queue
+    config:
+      queue_configs:
+        default:
+          max_retries: 3
+          concurrency: 4
+          type: standard
+        agent-runs:
+          max_retries: 3
+          concurrency: 2
+          type: standard
+      adapter:
+        name: builtin
+        config:
+          store_method: file_based
+          file_path: ./data/queue_store
+
+  - name: roster-ui
+    worker_path: ./workers/roster-ui
+
+  - name: roster-orchestrator
+    worker_path: ./workers/roster-orchestrator
+
+  - name: issues
+    worker_path: ./workers/issues
+
+  - name: thread
+    worker_path: ./workers/thread
+
+  - name: runtimes
+    worker_path: ./workers/runtimes
+
+  - name: agent-daemon
+    worker_path: ./workers/agent-daemon
+
+  - name: memory
+    worker_path: ./workers/memory
+
+  - name: shell
+    worker_path: ./workers/shell
+
+  - name: sandbox
+    worker_path: ./workers/sandbox
+
+  - name: agent
+    worker_path: ./workers/agent
+
+  # External worker. Not owned by roster. Lives in iii-engine-2/workers-repo until
+  # graduated to iii-hq/workers registry. Then swap to bare `- name: llm-router`.
+  - name: llm-router
+    worker_path: /Users/rohitghumare/iii-engine-2/workers-repo/llm-router

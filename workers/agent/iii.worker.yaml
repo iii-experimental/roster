@@ -1,0 +1,12 @@
+name: agent
+runtime:
+  language: typescript
+  package_manager: npm
+  entry: src/worker.ts
+resources:
+  memory: 2048
+  cpus: 2
+scripts:
+  install: "npm install"
+  start: "npm run dev"
+# Secrets load from .env via dotenv inside the worker. Never inline.

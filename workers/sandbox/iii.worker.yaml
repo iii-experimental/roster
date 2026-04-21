@@ -1,0 +1,11 @@
+name: sandbox
+runtime:
+  language: typescript
+  package_manager: npm
+  entry: src/worker.ts
+resources:
+  memory: 1024
+  cpus: 2
+scripts:
+  install: "npm install"
+  start: "npm run dev"

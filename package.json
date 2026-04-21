@@ -1,0 +1,14 @@
+{
+  "name": "roster",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "workers/*"
+  ],
+  "scripts": {
+    "dev": "iii start",
+    "install:all": "npm install --workspaces",
+    "typecheck": "npm run -ws --if-present typecheck"
+  },
+  "license": "Apache-2.0"
+}
