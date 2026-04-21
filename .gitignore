@@ -24,3 +24,9 @@ data/
 coverage/
 .turbo/
 .gstack/
+.claude/
+.cursor/
+
+# vite / tsbuildinfo
+**/.vite/
+**/*.tsbuildinfo
