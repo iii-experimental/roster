@@ -1,0 +1,11 @@
+name: roster-ui
+runtime:
+  language: typescript
+  package_manager: npm
+  entry: src/main.ts
+resources:
+  memory: 1024
+  cpus: 1
+scripts:
+  install: "npm install"
+  start: "sh -c 'npm run dev -- --host \"${VITE_HOST:-127.0.0.1}\"'"

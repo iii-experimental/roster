@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>roster</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap"
+    />
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <div id="app">
+      <aside id="sidebar">
+        <div id="brand">
+          <span class="mark">iii</span>
+          <span class="wordmark">roster</span>
+        </div>
+        <nav id="nav">
+          <a href="#/board" id="nav-board" class="active">Board</a>
+          <a href="#/agents" id="nav-agents">Agents</a>
+          <a href="#/runtimes" id="nav-runtimes">Runtimes</a>
+          <a href="#/settings" id="nav-settings">Settings</a>
+        </nav>
+        <div id="connection">
+          <span class="dot" id="connDot"></span>
+          <span class="mono" id="connLabel">connecting…</span>
+        </div>
+      </aside>
+
+      <main id="main">
+        <header id="viewHeader">
+          <h1 id="viewTitle">—</h1>
+          <div id="viewStats" class="mono"></div>
+        </header>
+
+        <section id="viewBody">
+          <div id="board" class="view active">
+            <div class="column" data-status="open">
+              <h2 class="columnHeader"><span>OPEN</span> <span id="countOpen" class="mono">0</span></h2>
+              <div id="colOpen" class="columnBody"></div>
+            </div>
+            <div class="column" data-status="claimed">
+              <h2 class="columnHeader"><span>CLAIMED</span> <span id="countClaimed" class="mono">0</span></h2>
+              <div id="colClaimed" class="columnBody"></div>
+            </div>
+            <div class="column" data-status="running">
+              <h2 class="columnHeader"><span>RUNNING</span> <span id="countRunning" class="mono">0</span></h2>
+              <div id="colRunning" class="columnBody"></div>
+            </div>
+            <div class="column" data-status="review">
+              <h2 class="columnHeader"><span>REVIEW</span> <span id="countReview" class="mono">0</span></h2>
+              <div id="colReview" class="columnBody"></div>
+            </div>
+            <div class="column" data-status="done">
+              <h2 class="columnHeader"><span>DONE</span> <span id="countDone" class="mono">0</span></h2>
+              <div id="colDone" class="columnBody"></div>
+            </div>
+          </div>
+
+          <div id="runDetail" class="view">
+            <div id="runTurns"></div>
+            <div id="runFooter">
+              <div class="budgetWrap"><div id="budgetBar" class="budgetBar"></div></div>
+              <span id="runCost" class="mono">$0.00 / $0.00</span>
+            </div>
+          </div>
+
+          <div id="agents" class="view"></div>
+          <div id="runtimes" class="view"></div>
+          <div id="settings" class="view"></div>
+        </section>
+
+        <div id="toastLayer"></div>
+        <div id="modalLayer"></div>
+      </main>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

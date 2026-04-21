@@ -5,12 +5,22 @@ plan.md
 
 # Standard
 node_modules/
+**/node_modules/
+
+# per-worker lock files — root workspace lock is the source of truth
+workers/*/package-lock.json
 .DS_Store
 dist/
+**/dist/
 target/
+**/target/
+data/
 *.log
 .env
+**/.env
 .env.local
+**/.env.local
 .iii/
 coverage/
 .turbo/
+.gstack/
