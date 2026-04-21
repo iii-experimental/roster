@@ -110,17 +110,27 @@ body {
 }
 .card:hover { border-color: var(--accent); }
 .card .cardTitle { font-size: 13px; font-weight: 500; margin-bottom: 4px; }
-.card .cardMeta { font-family: var(--font-mono); font-size: 11px; color: var(--muted); display: flex; gap: 10px; }
+.card .cardMeta { font-family: var(--font-mono); font-size: 11px; color: var(--muted); display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
 .card .cardMeta .pill { padding: 1px 6px; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.card .cardMeta .pill.ok { border-color: var(--success); color: var(--success); }
+.card .cardMeta .pill.warn { border-color: var(--warning); color: var(--warning); }
+.card .cardMeta .pill.err { border-color: var(--error); color: var(--error); }
+.card .cardMeta .pill.info { border-color: var(--info); color: var(--info); }
+.cardLink { color: var(--secondary); text-decoration: none; margin-left: auto; font-size: 11px; }
+.cardLink:hover { color: var(--accent); }
 
 #runTurns { display: flex; flex-direction: column; gap: 10px; padding-bottom: 60px; }
+.runHeader { cursor: default; }
+.runHeader:hover { border-color: var(--border); }
 .turn { background: var(--elevated); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); padding: 10px 12px; }
 .turn.role-user { border-left: 2px solid var(--accent); }
 .turn.role-assistant { border-left: 2px solid var(--info); }
 .turn.role-tool { border-left: 2px solid var(--muted); }
-.turn .turnHead { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); margin-bottom: 6px; }
-.turn .turnBody { font-size: 13px; white-space: pre-wrap; }
-.turn .turnBody.mono { font-size: 12px; }
+.turn.role-system { border-left: 2px solid var(--border); }
+.turn .turnHead { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); margin-bottom: 6px; gap: 10px; }
+.turn .turnBody { font-size: 13px; white-space: pre-wrap; word-break: break-word; }
+.turn .turnBody.mono { font-size: 12px; background: var(--background); padding: 8px; border-radius: var(--radius-sm); margin-top: 6px; overflow-x: auto; }
+.runStatus { font-size: 11px; color: var(--muted); padding: 6px 2px; }
 
 #runFooter {
   position: fixed;

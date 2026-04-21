@@ -215,9 +215,33 @@ iii.registerFunction(`${PREFIX}::ui::apply`, async (event: StateEvent | Snapshot
   return { ok: true, applied };
 });
 
-function currentView(): string {
-  const h = location.hash.replace(/^#\//, '');
-  return h.split('/')[0] || 'board';
+type Route =
+  | { view: 'board' | 'agents' | 'runtimes' | 'settings' }
+  | { view: 'run'; runId: string };
+
+// Plain pathname router. `/` → board, `/runs/:id` → run detail. Also tolerates
+// hash-style legacy links (`#/board`) in case something still bookmarks them.
+function parseLocation(): Route {
+  const pathParts = location.pathname.split('/').filter(Boolean);
+  if (pathParts[0] === 'runs' && pathParts[1]) {
+    return { view: 'run', runId: pathParts[1] };
+  }
+  if (pathParts[0] && ['agents', 'runtimes', 'settings', 'board'].includes(pathParts[0])) {
+    return { view: pathParts[0] as 'board' | 'agents' | 'runtimes' | 'settings' };
+  }
+  const hash = location.hash.replace(/^#\//, '').split('/')[0];
+  if (hash === 'agents' || hash === 'runtimes' || hash === 'settings') {
+    return { view: hash };
+  }
+  return { view: 'board' };
+}
+
+function scopeKeyFor(route: Route): string {
+  return route.view === 'run' ? `ui::run::${route.runId}` : `ui::${route.view}`;
+}
+
+function viewElementId(route: Route): string {
+  return route.view === 'run' ? 'runDetail' : route.view;
 }
 
 let currentScope: { scope: string; key: string } | null = null;
@@ -225,35 +249,67 @@ let currentScope: { scope: string; key: string } | null = null;
 // same trigger wastes work and duplicates state-reaction fan-out.
 const registeredRosterKeys = new Set<string>();
 
-async function subscribeTo(view: string) {
-  const key = `ui::${view}`;
+function subscribeKey(key: string) {
+  if (registeredRosterKeys.has(key)) return;
+  iii.registerTrigger({
+    type: 'state',
+    function_id: `${PREFIX}::ui::apply`,
+    config: { scope: 'roster', key },
+  });
+  registeredRosterKeys.add(key);
+}
+
+async function applyRoute(route: Route) {
+  const key = scopeKeyFor(route);
   if (currentScope?.scope === 'roster' && currentScope.key === key) return;
+  // Reset applied generations for the new scope so the incoming snapshot is
+  // always applied even if its generation is lower than the previous view's.
+  appliedGenerations.delete(key);
   currentScope = { scope: 'roster', key };
-  if (!registeredRosterKeys.has(key)) {
-    iii.registerTrigger({
-      type: 'state',
-      function_id: `${PREFIX}::ui::apply`,
-      config: { scope: 'roster', key },
-    });
-    registeredRosterKeys.add(key);
-  }
+  subscribeKey(key);
+
+  const rehydratePayload: Record<string, unknown> = { tab_id: tabId, view: route.view };
+  if (route.view === 'run') rehydratePayload.run_id = route.runId;
   await iii.trigger({
     function_id: 'roster-orchestrator::rehydrate',
-    payload: { tab_id: tabId, view },
+    payload: rehydratePayload,
   }).catch(() => {});
+
   for (const n of ['board', 'agents', 'runtimes', 'settings']) {
     const el = document.getElementById(`nav-${n}`);
-    if (el) el.classList.toggle('active', n === view);
+    if (el) el.classList.toggle('active', route.view === n);
   }
   for (const v of document.querySelectorAll('.view')) v.classList.remove('active');
-  const viewEl = document.getElementById(view === 'runs' ? 'runDetail' : view);
+  const viewEl = document.getElementById(viewElementId(route));
   if (viewEl) viewEl.classList.add('active');
 }
 
-window.addEventListener('hashchange', () => void subscribeTo(currentView()));
+function navigate(url: string) {
+  if (url === location.pathname + location.search + location.hash) return;
+  history.pushState(null, '', url);
+  void applyRoute(parseLocation());
+}
+
+window.addEventListener('popstate', () => void applyRoute(parseLocation()));
+window.addEventListener('hashchange', () => void applyRoute(parseLocation()));
+
+// Intercept same-origin clicks on anchors that resolve to a route we own, so
+// the board's "view run" link routes without a full page reload.
+document.addEventListener('click', (e) => {
+  if (e.defaultPrevented || e.button !== 0) return;
+  if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+  const anchor = (e.target as Element | null)?.closest?.('a');
+  if (!anchor) return;
+  const href = anchor.getAttribute('href');
+  if (!href || href.startsWith('http') || href.startsWith('mailto:')) return;
+  if (anchor.target && anchor.target !== '' && anchor.target !== '_self') return;
+  if (!href.startsWith('/')) return;
+  e.preventDefault();
+  navigate(href);
+});
 
 (async () => {
-  await subscribeTo(currentView());
+  await applyRoute(parseLocation());
   const dot = $('connDot');
   dot.classList.add('ok');
   $('connLabel').textContent = `tab ${tabId.slice(0, 8)}`;
