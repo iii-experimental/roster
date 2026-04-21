@@ -41,10 +41,6 @@ type CompleteResult = {
   error?: string;
 };
 
-// Strip any leading "openrouter/" so "openrouter/openai/gpt-4o-mini" becomes
-// the slug OpenRouter actually expects.
-const slugFor = (model: string) => model.replace(/^openrouter\//, '');
-
 function buildMessages(input: CompleteInput): Msg[] {
   if (input.messages?.length) return input.messages;
   const out: Msg[] = [];
@@ -59,13 +55,6 @@ iii.registerFunction('provider-openrouter::complete', async (input: CompleteInpu
     return { ok: false, text: '', model: input.model, error: 'OPENROUTER_API_KEY not set' };
   }
 
-  const body = {
-    model: slugFor(input.model),
-    messages: buildMessages(input),
-    max_tokens: input.max_tokens ?? 512,
-    temperature: input.temperature,
-  };
-
   try {
     const resp = await fetch(ENDPOINT, {
       method: 'POST',
@@ -75,7 +64,12 @@ iii.registerFunction('provider-openrouter::complete', async (input: CompleteInpu
         'HTTP-Referer': 'https://github.com/iii-experimental/roster',
         'X-Title': 'roster',
       },
-      body: JSON.stringify(body),
+      body: JSON.stringify({
+        model: input.model.replace(/^openrouter\//, ''),
+        messages: buildMessages(input),
+        max_tokens: input.max_tokens ?? 512,
+        temperature: input.temperature,
+      }),
     });
     if (!resp.ok) {
       return { ok: false, text: '', model: input.model, error: `http ${resp.status}: ${await resp.text()}` };

@@ -41,9 +41,6 @@ type CompleteResult = {
   usage?: { prompt_tokens?: number; completion_tokens?: number };
 };
 
-// Strip a leading "openai/" so "openai/gpt-4o" becomes the raw slug.
-const slugFor = (model: string) => model.replace(/^openai\//, '') || DEFAULT_MODEL;
-
 function buildMessages(input: CompleteInput): Msg[] {
   if (input.messages?.length) return input.messages;
   const out: Msg[] = [];
@@ -58,18 +55,16 @@ iii.registerFunction('provider-openai::complete', async (input: CompleteInput): 
     return { ok: false, text: '', model: input.model, error: 'OPENAI_API_KEY not set' };
   }
 
-  const body = {
-    model: slugFor(input.model),
-    messages: buildMessages(input),
-    max_tokens: input.max_tokens ?? 1024,
-    temperature: input.temperature,
-  };
-
   try {
     const resp = await fetch(ENDPOINT, {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
+      body: JSON.stringify({
+        model: input.model.replace(/^openai\//, '') || DEFAULT_MODEL,
+        messages: buildMessages(input),
+        max_tokens: input.max_tokens ?? 1024,
+        temperature: input.temperature,
+      }),
     });
     if (!resp.ok) {
       return { ok: false, text: '', model: input.model, error: `http ${resp.status}: ${await resp.text()}` };

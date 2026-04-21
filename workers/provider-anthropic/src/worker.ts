@@ -41,15 +41,6 @@ type CompleteResult = {
   usage?: { prompt_tokens?: number; completion_tokens?: number; cost_usd?: number };
 };
 
-// Strip a leading "anthropic/" so "anthropic/claude-opus-4-7" becomes the
-// raw slug Anthropic's API expects.
-const slugFor = (model: string) => model.replace(/^anthropic\//, '') || DEFAULT_MODEL;
-
-function buildMessages(input: CompleteInput): Msg[] {
-  if (input.messages?.length) return input.messages;
-  return input.prompt ? [{ role: 'user', content: input.prompt }] : [];
-}
-
 iii.registerFunction('provider-anthropic::complete', async (input: CompleteInput): Promise<CompleteResult> => {
   const key = process.env.ANTHROPIC_API_KEY;
   if (!key) {
@@ -57,8 +48,10 @@ iii.registerFunction('provider-anthropic::complete', async (input: CompleteInput
   }
 
   const body: Record<string, unknown> = {
-    model: slugFor(input.model),
-    messages: buildMessages(input),
+    model: input.model.replace(/^anthropic\//, '') || DEFAULT_MODEL,
+    messages: input.messages?.length
+      ? input.messages
+      : input.prompt ? [{ role: 'user', content: input.prompt }] : [],
     max_tokens: input.max_tokens ?? 1024,
   };
   if (input.system) body.system = input.system;
