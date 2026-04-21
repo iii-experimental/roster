@@ -80,7 +80,8 @@ workers:
   - name: provider-cli
     worker_path: ./workers/provider-cli
 
-  # Registry worker. One-line reference by name once it ships in iii-hq/workers.
-  # Local fallback path is only used while the upstream patch is in flight.
+  # Registry worker. Resolves via `iii worker add llm-router` once it ships in
+  # iii-hq/workers. Until then, developers can point to a local checkout by
+  # setting III_LLM_ROUTER_PATH and uncommenting the override below.
   - name: llm-router
-    worker_path: /Users/rohitghumare/iii-engine-2/workers-repo/llm-router
+    # worker_path: ${III_LLM_ROUTER_PATH}
