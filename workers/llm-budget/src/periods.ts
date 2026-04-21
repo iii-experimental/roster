@@ -44,6 +44,8 @@ export function nextPeriodStart(period: Period, start: number): number {
 }
 
 // A stable key for this period, used as part of meter keys.
+// Week keys use ISO 8601 (YYYY-Www) so they look like calendar weeks and
+// don't get confused with months (`W04` previously meant "April", misleading).
 export function periodKey(period: Period, start: number): string {
   const d = new Date(start);
   const y = d.getUTCFullYear();
@@ -51,9 +53,26 @@ export function periodKey(period: Period, start: number): string {
   const day = String(d.getUTCDate()).padStart(2, '0');
   switch (period) {
     case 'day': return `${y}-${m}-${day}`;
-    case 'week': return `${y}-W${m}-${day}`;
+    case 'week': {
+      const { isoYear, isoWeek } = isoWeekOf(d);
+      return `${isoYear}-W${String(isoWeek).padStart(2, '0')}`;
+    }
     case 'month': return `${y}-${m}`;
   }
+}
+
+// ISO-8601 week-of-year + iso-year (Thursday rule). Needed because an
+// early-January date can belong to the previous iso year, and a late-
+// December date can belong to the next iso year.
+function isoWeekOf(d: Date): { isoYear: number; isoWeek: number } {
+  const t = new Date(
+    Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()),
+  );
+  const dow = t.getUTCDay() || 7;
+  t.setUTCDate(t.getUTCDate() + 4 - dow);
+  const yearStart = new Date(Date.UTC(t.getUTCFullYear(), 0, 1));
+  const isoWeek = Math.ceil(((t.getTime() - yearStart.getTime()) / 86_400_000 + 1) / 7);
+  return { isoYear: t.getUTCFullYear(), isoWeek };
 }
 
 // Days elapsed since `start` at time `now`, with a floor of 1 so we never
