@@ -79,7 +79,10 @@ async function notifyForMention(
       { issue_id: mention.id },
       `issue:${mention.id}`,
     );
-    if (probe != null) {
+    // issues::get returns { issue: Issue | null }, so probe itself is always
+    // a non-null envelope when the trigger succeeds — must unwrap to confirm
+    // the issue actually exists.
+    if (probe != null && (probe as { issue?: unknown }).issue != null) {
       await safeTrigger(
         'thread::system_msg',
         { thread_id: threadId, body: `linked issue #${mention.id}` },
@@ -95,7 +98,9 @@ async function notifyForMention(
       { run_id: mention.id },
       `run:${mention.id}`,
     );
-    if (probe != null) {
+    // Same envelope shape as issues::get — agent::run_status returns
+    // { run: Run | null }.
+    if (probe != null && (probe as { run?: unknown }).run != null) {
       await safeTrigger(
         'thread::system_msg',
         { thread_id: threadId, body: `linked run ${mention.id}` },
