@@ -68,7 +68,19 @@ workers:
   - name: agent
     worker_path: ./workers/agent
 
-  # External worker. Not owned by roster. Lives in iii-engine-2/workers-repo until
-  # graduated to iii-hq/workers registry. Then swap to bare `- name: llm-router`.
+  - name: provider-openrouter
+    worker_path: ./workers/provider-openrouter
+
+  - name: provider-anthropic
+    worker_path: ./workers/provider-anthropic
+
+  - name: provider-openai
+    worker_path: ./workers/provider-openai
+
+  - name: provider-cli
+    worker_path: ./workers/provider-cli
+
+  # Registry worker. One-line reference by name once it ships in iii-hq/workers.
+  # Local fallback path is only used while the upstream patch is in flight.
   - name: llm-router
     worker_path: /Users/rohitghumare/iii-engine-2/workers-repo/llm-router

@@ -1,11 +1,8 @@
-name: agent
+name: provider-anthropic
 runtime:
   language: typescript
   package_manager: npm
   entry: src/worker.ts
-resources:
-  memory: 2048
-  cpus: 2
 scripts:
   install: "npm install"
   start: "npm run dev"

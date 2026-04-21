@@ -14,7 +14,7 @@ Assign an issue to an agent. Agent claims it, runs inside its own microVM, calls
 
 ## What's in the box
 
-Ten workers wired today. Eight more planned in `spec.md`.
+14 workers wired today. More planned in `spec.md`.
 
 | Worker | Language | Role |
 |---|---|---|
@@ -24,11 +24,29 @@ Ten workers wired today. Eight more planned in `spec.md`.
 | `thread` | TypeScript | `open`, `post`, `list`, `system_msg`. Generic discussion thread for issues or agent runs. |
 | `runtimes` | TypeScript | `register`, `heartbeat`, `list`, `revoke`. Cron `gc` marks stale runtimes offline after 90s. |
 | `agent-daemon` | TypeScript | Registers a runtime, heartbeats, watches `issues` scope, claims `claimed` issues for its own runtime_id, kicks off `agent::run_start`. |
-| `agent` | TypeScript | ReAct-style loop. Calls `router::decide` → provider adapter → `router::health_update`. Adapters: `claude`, `codex`, `opencode`, `openrouter`, `echo`. |
+| `agent` | TypeScript | Run lifecycle + reasoning loop. Calls `router::decide` → dispatches by model-id prefix to a `provider-*::complete` worker → `router::health_update`. No inline provider code. |
 | `memory` | TypeScript | `store`, `recall`, `get`, `forget`, `list`, `consolidate`. BM25-only v1. |
 | `shell` | TypeScript | `exec`, `which`, `detect_clis`. Denylist for `rm/sudo/mkfs/...`. |
 | `sandbox` | TypeScript | `create`, `write_files`, `exec`, `read_files`, `destroy`. v1 = host-scoped dir (each worker already in its own microVM). Nested microVM spawn waits on engine public `VmBuilder` API. |
+| `provider-openrouter` ★ | TypeScript (registry) | `provider-openrouter::complete` — OpenRouter Chat Completions. One key unlocks 200+ models (OpenAI, Anthropic, Google, Meta, Mistral, ...). |
+| `provider-anthropic` ★ | TypeScript (registry) | `provider-anthropic::complete` — Anthropic Messages API direct. `ANTHROPIC_API_KEY`. |
+| `provider-openai` ★ | TypeScript (registry) | `provider-openai::complete` — OpenAI Chat Completions direct. `OPENAI_API_KEY`, `OPENAI_BASE_URL` for Azure/compat endpoints. |
+| `provider-cli` ★ | TypeScript (registry) | `provider-cli::complete` — wraps CLI tools via `shell::exec`: `claude`, `codex`, `opencode`, `openclaw`, `hermes`, `pi`, `gemini`, `cursor-agent`. |
 | `llm-router` ★ | Rust (registry) | `router::decide`, `policy_*`, `classify`, `ab_*`, `health_*`, `model_*`, `stats`. Unopinionated — no baked-in catalog. |
+
+### Provider routing
+
+Model ids look like `<provider>/<slug>`. Router returns a model id; agent dispatches:
+
+| Model id prefix | Provider worker | Credentials |
+|---|---|---|
+| `openrouter/...` | `provider-openrouter` | `OPENROUTER_API_KEY` |
+| `anthropic/...` | `provider-anthropic` | `ANTHROPIC_API_KEY` |
+| `openai/...` | `provider-openai` | `OPENAI_API_KEY` |
+| `claude-cli/...` `codex-cli/...` `opencode-cli/...` `openclaw-cli/...` `hermes-cli/...` `pi-cli/...` `gemini-cli/...` `cursor-agent-cli/...` | `provider-cli` | CLI must be installed inside the runtime |
+| `echo/...` | inline test hook | none |
+
+Add a new provider = one new narrow worker with `provider-<name>::complete({model, prompt, ...}) -> {ok, text, usage?}`. Register a policy in `llm-router` that returns `<name>/<slug>`. Agent picks it up with zero code changes.
 
 ★ = not owned by roster. Lives in the workers repo, pulled in via config.
 

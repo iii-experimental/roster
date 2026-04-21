@@ -1,13 +1,4 @@
-import 'dotenv/config';
-import { config as dotenvConfig } from 'dotenv';
-import { existsSync } from 'node:fs';
 import { registerWorker, Logger } from 'iii-sdk';
-
-// microVM mounts the project at /workspace; cwd inside the VM isn't always the
-// workspace root, so try the common spots.
-for (const p of ['.env', '/workspace/.env', '/workspace/../.env']) {
-  if (existsSync(p)) dotenvConfig({ path: p, override: false });
-}
 
 const iii = registerWorker(
   process.env.III_URL ?? 'ws://localhost:49134',
@@ -55,7 +46,13 @@ type Run = {
   budget_used_usd: number;
 };
 
-type ShellResult = { stdout: string; stderr: string; code: number; elapsed_ms: number };
+type CompleteResult = {
+  ok: boolean;
+  text: string;
+  model: string;
+  error?: string;
+  usage?: { prompt_tokens?: number; completion_tokens?: number; cost_usd?: number };
+};
 
 const stateSet = (scope: string, key: string, value: unknown) =>
   iii.trigger({ function_id: 'state::set', payload: { scope, key, value } });
@@ -63,19 +60,39 @@ const stateSet = (scope: string, key: string, value: unknown) =>
 const stateGet = async <T>(scope: string, key: string): Promise<T | null> =>
   ((await iii.trigger({ function_id: 'state::get', payload: { scope, key } })) as T | null) ?? null;
 
-const callShell = (payload: Record<string, unknown>) =>
-  iii.trigger({ function_id: 'shell::exec', payload }) as Promise<ShellResult>;
+// Any model id whose prefix is one of these lands on provider-cli. Every
+// other prefix resolves to provider-<prefix>. Echo is an inline test hook.
+const CLI_PREFIXES = new Set([
+  'claude-cli',
+  'codex-cli',
+  'opencode-cli',
+  'openclaw-cli',
+  'hermes-cli',
+  'pi-cli',
+  'gemini-cli',
+  'cursor-agent-cli',
+]);
 
-iii.registerFunction(
-  'agent::providers_detect',
-  async (_input: { runtime_id?: string }) => {
-    const r = (await iii.trigger({
-      function_id: 'shell::detect_clis',
-      payload: {},
-    })) as { clis: string[] };
-    return { providers: r.clis };
-  },
-);
+function providerWorkerFor(model: string): string | 'echo' | 'cli' {
+  const prefix = model.split('/')[0] ?? '';
+  if (prefix === 'echo') return 'echo';
+  if (CLI_PREFIXES.has(prefix)) return 'cli';
+  return prefix;
+}
+
+async function complete(model: string, prompt: string): Promise<CompleteResult> {
+  const kind = providerWorkerFor(model);
+  if (kind === 'echo') {
+    return { ok: true, text: `[echo] ${prompt.slice(0, 280)}`, model };
+  }
+  const fn = kind === 'cli' ? 'provider-cli::complete' : `provider-${kind}::complete`;
+  return (await iii.trigger({ function_id: fn, payload: { model, prompt } })) as CompleteResult;
+}
+
+iii.registerFunction('agent::providers_detect', async (_input: { runtime_id?: string }) => {
+  const r = (await iii.trigger({ function_id: 'shell::detect_clis', payload: {} })) as { clis: string[] };
+  return { providers: r.clis };
+});
 
 iii.registerFunction(
   'agent::register',
@@ -175,8 +192,8 @@ async function executeRun(run: Run, agent: AgentDef) {
     `Issue: ${issue.issue.title}\n\n${issue.issue.body}\n\n` +
     `Respond concisely with what you would do. No tool use in this phase.`;
 
-  // router is unopinionated: policies + catalog live in runtime state. If it
-  // isn't available, fall back to the agent's declared provider.
+  // router is unopinionated: policies + catalog live in runtime state. Falls
+  // back to the agent's declared provider when no policy matches.
   let decision: { model?: string; reason?: string; policy_id?: string } | null = null;
   try {
     decision = (await iii.trigger({
@@ -193,20 +210,13 @@ async function executeRun(run: Run, agent: AgentDef) {
     log.warn('router::decide skipped', { error: String(err) });
   }
 
-  // Model ids look like "<provider>/<slug>" (e.g. "echo/tiny", "openrouter/openai/gpt-4o-mini").
-  const effectiveProvider = decision?.model?.split('/')[0] ?? agent.provider;
+  const model = decision?.model || `${agent.provider}/default`;
   const turnStart = Date.now();
-  const result = await callProvider(effectiveProvider, prompt, decision?.model).catch(
-    (err): ProviderResult => ({
-      ok: false,
-      error: String(err),
-      stdout: '',
-      stderr: String(err),
-      code: -1,
-    }),
+  const result = await complete(model, prompt).catch(
+    (err): CompleteResult => ({ ok: false, text: '', model, error: String(err) }),
   );
 
-  const answer = result.ok ? result.stdout : `[provider error] ${result.stderr}`;
+  const answer = result.ok ? result.text : `[provider error] ${result.error ?? 'unknown'}`;
 
   if (decision?.model) {
     iii
@@ -225,12 +235,13 @@ async function executeRun(run: Run, agent: AgentDef) {
     n: 1,
     role: 'assistant',
     content: answer,
-    tokens_in: 0,
-    tokens_out: 0,
-    cost_usd: 0,
+    tokens_in: result.usage?.prompt_tokens ?? 0,
+    tokens_out: result.usage?.completion_tokens ?? 0,
+    cost_usd: result.usage?.cost_usd ?? 0,
     ms: Date.now() - turnStart,
   };
   run.turns.push(turn);
+  run.budget_used_usd += turn.cost_usd;
   await stateSet(SCOPE, `agent_run:${run.id}`, run);
 
   await iii.trigger({
@@ -249,77 +260,4 @@ async function executeRun(run: Run, agent: AgentDef) {
   await stateSet(SCOPE, `agent_run:${run.id}`, run);
 }
 
-type ProviderResult =
-  | { ok: true; stdout: string; stderr: string; code: number }
-  | { ok: false; stdout: string; stderr: string; code: number; error: string };
-
-type ProviderFn = (prompt: string, model?: string) => Promise<ProviderResult>;
-
-// A CLI-backed provider just runs a binary via shell::exec. Each entry lists
-// the bin and its argv factory for the single-prompt form.
-const CLI_PROVIDERS: Record<string, { bin: string; args: (prompt: string) => string[] }> = {
-  claude: { bin: 'claude', args: (p) => ['--print', p] },
-  codex: { bin: 'codex', args: (p) => ['exec', p] },
-  opencode: { bin: 'opencode', args: (p) => ['run', p] },
-};
-
-async function cliAdapter(bin: string, args: string[]): Promise<ProviderResult> {
-  const { path } = (await iii.trigger({
-    function_id: 'shell::which',
-    payload: { bin },
-  })) as { path: string | null };
-  if (!path) {
-    return { ok: false, error: `${bin} CLI not found`, stdout: '', stderr: 'not installed', code: 127 };
-  }
-  const res = await callShell({ cmd: bin, args, timeout_ms: 120_000 });
-  return { ok: res.code === 0, stdout: res.stdout, stderr: res.stderr, code: res.code };
-}
-
-async function openrouterAdapter(prompt: string, model?: string): Promise<ProviderResult> {
-  const key = process.env.OPENROUTER_API_KEY;
-  if (!key) {
-    return { ok: false, error: 'OPENROUTER_API_KEY not set', stdout: '', stderr: 'missing key', code: 1 };
-  }
-  const slug = (model ?? 'openrouter/openai/gpt-4o-mini').replace(/^openrouter\//, '');
-  try {
-    const resp = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${key}`,
-        'Content-Type': 'application/json',
-        'HTTP-Referer': 'https://github.com/iii-experimental/roster',
-        'X-Title': 'roster',
-      },
-      body: JSON.stringify({
-        model: slug,
-        messages: [{ role: 'user', content: prompt }],
-        max_tokens: 512,
-      }),
-    });
-    if (!resp.ok) {
-      return { ok: false, error: `http ${resp.status}`, stdout: '', stderr: await resp.text(), code: resp.status };
-    }
-    const data = (await resp.json()) as { choices?: { message?: { content?: string } }[] };
-    return { ok: true, stdout: data.choices?.[0]?.message?.content ?? '', stderr: '', code: 0 };
-  } catch (err) {
-    return { ok: false, error: String(err), stdout: '', stderr: String(err), code: 1 };
-  }
-}
-
-const PROVIDERS: Record<string, ProviderFn> = {
-  openrouter: openrouterAdapter,
-  echo: async (prompt) => ({ ok: true, stdout: `[echo] ${prompt.slice(0, 280)}`, stderr: '', code: 0 }),
-  ...Object.fromEntries(
-    Object.entries(CLI_PROVIDERS).map(
-      ([name, { bin, args }]): [string, ProviderFn] => [name, (p) => cliAdapter(bin, args(p))],
-    ),
-  ),
-};
-
-async function callProvider(provider: string, prompt: string, model?: string): Promise<ProviderResult> {
-  const fn = PROVIDERS[provider];
-  if (!fn) throw new Error(`unknown provider: ${provider}`);
-  return await fn(prompt, model);
-}
-
-log.info('agent worker registered', { providers: Object.keys(PROVIDERS) });
+log.info('agent worker registered');
