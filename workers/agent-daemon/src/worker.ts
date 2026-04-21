@@ -52,46 +52,23 @@ async function heartbeat() {
   }
 }
 
+// Fire-and-forget: kick off the run, flip issue to running. Terminal status
+// flows back via on_run_change (state-reaction on the agents scope), so the
+// daemon never polls or holds an open invocation waiting for the agent.
 iii.registerFunction('agent-daemon::run_claimed', async (input: { issue_id: string; agent_id: string }) => {
   log.info('claiming run', input);
   await iii.trigger({
     function_id: 'issues::status_set',
     payload: { issue_id: input.issue_id, status: 'running' },
   });
-
   try {
     const start = (await iii.trigger({
       function_id: 'agent::run_start',
       payload: { agent_id: input.agent_id, issue_id: input.issue_id },
     })) as { run_id: string };
     log.info('agent run started', { run_id: start.run_id });
-
-    const deadline = Date.now() + 180_000;
-    let run: { status: string } | null = null;
-    while (Date.now() < deadline) {
-      await new Promise((r) => setTimeout(r, 1500));
-      const res = (await iii.trigger({
-        function_id: 'agent::run_status',
-        payload: { run_id: start.run_id },
-      })) as { run: { status: string } | null };
-      run = res.run;
-      if (!run) break;
-      if (run.status === 'completed' || run.status === 'failed' || run.status === 'cancelled') break;
-    }
-
-    // Only flip the issue when the run reached a terminal state. If polling
-    // timed out with run still 'running', mark blocked with a distinct reason
-    // so it's visible that a human should investigate — the agent may still
-    // be working in the background.
-    const isTerminal = run?.status === 'completed' || run?.status === 'failed' || run?.status === 'cancelled';
-    const nextStatus = run?.status === 'completed' ? 'review' : 'blocked';
-    const reason = isTerminal ? (run?.status ?? 'unknown') : 'daemon-poll-timeout';
-    await iii.trigger({
-      function_id: 'issues::status_set',
-      payload: { issue_id: input.issue_id, status: nextStatus, reason },
-    });
   } catch (err) {
-    log.error('run_claimed failed', { error: String(err) });
+    log.error('run_claimed failed to start', { error: String(err) });
     await iii.trigger({
       function_id: 'issues::status_set',
       payload: { issue_id: input.issue_id, status: 'blocked', reason: String(err) },
@@ -113,10 +90,38 @@ iii.registerFunction('agent-daemon::on_issue_claimed', async (event: { new_value
   });
 });
 
+// State-reaction on the agents scope. Fires on every agent_run:* write. When
+// the run's status becomes terminal, reflect that into the linked issue.
+// Replaces the polling loop; engine delivers the event synchronously with the
+// write, so no loop, no deadline, no wasted round-trips.
+iii.registerFunction('agent-daemon::on_run_change', async (event: {
+  key?: string;
+  new_value?: { id?: string; issue_id?: string; status?: string };
+}) => {
+  if (!event?.key?.startsWith('agent_run:')) return { skipped: 'not-a-run' };
+  const run = event.new_value;
+  if (!run?.issue_id || !run.status) return { skipped: 'missing-fields' };
+  if (run.status !== 'completed' && run.status !== 'failed' && run.status !== 'cancelled') {
+    return { skipped: 'non-terminal' };
+  }
+  const nextStatus = run.status === 'completed' ? 'review' : 'blocked';
+  await iii.trigger({
+    function_id: 'issues::status_set',
+    payload: { issue_id: run.issue_id, status: nextStatus, reason: run.status },
+  });
+  return { ok: true, run_id: run.id, status: run.status };
+});
+
 iii.registerTrigger({
   type: 'state',
   function_id: 'agent-daemon::on_issue_claimed',
   config: { scope: 'issues' },
+});
+
+iii.registerTrigger({
+  type: 'state',
+  function_id: 'agent-daemon::on_run_change',
+  config: { scope: 'agents' },
 });
 
 async function registerWithRetry(): Promise<void> {
