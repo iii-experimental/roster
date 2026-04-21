@@ -6,9 +6,10 @@
     "workers/*"
   ],
   "scripts": {
-    "dev": "iii start",
+    "dev": "iii",
     "install:all": "npm install --workspaces",
-    "typecheck": "npm run -ws --if-present typecheck"
+    "typecheck": "npm run -ws --if-present typecheck",
+    "smoke": "bash scripts/smoke.sh"
   },
   "license": "Apache-2.0"
 }

@@ -67,9 +67,11 @@ git clone https://github.com/iii-experimental/roster
 cd roster
 npm install --workspaces       # installs deps for each worker
 
-# 3. put any provider keys in workers/agent/.env (gitignored)
-cp workers/agent/.env.example workers/agent/.env
-$EDITOR workers/agent/.env     # set OPENROUTER_API_KEY, etc.
+# 3. copy provider env templates (fill only what you'll exercise)
+cp workers/provider-openrouter/.env.example workers/provider-openrouter/.env
+cp workers/provider-anthropic/.env.example  workers/provider-anthropic/.env
+cp workers/provider-openai/.env.example     workers/provider-openai/.env
+$EDITOR workers/provider-openrouter/.env     # set OPENROUTER_API_KEY
 
 # 4. boot the engine (reads ./config.yaml, starts every worker as a local-path sandbox)
 iii
@@ -77,34 +79,22 @@ iii
 
 Open `http://localhost:5173` in a second tab for the board. First boot takes 2–3 minutes per worker (npm install + libkrun VM warm-up); subsequent boots are ~5 seconds.
 
-### Smoke test from the CLI
+See [`docs/providers.md`](./docs/providers.md) for model-id prefixes, env vars per provider, and how to add a new provider worker.
+
+### Smoke test
+
+One command exercises the whole pipe (register agent → policy → issue → assign → status flip) using the inline `echo/` provider. No API key needed.
 
 ```bash
-# register an echo agent + policy
-iii trigger --function-id 'agent::register' \
-  --payload '{"workspace_id":"default","name":"echo-bot","provider":"echo"}'
-
-iii trigger --function-id 'router::policy_create' --payload '{
-  "id":"echo-default","name":"Echo default",
-  "match":{"feature":"roster.agent.run","tags":["echo"]},
-  "action":{"model":"echo/tiny"},"priority":100,"enabled":true
-}'
-
-# create, assign, watch status flip claimed → running → review
-iii trigger --function-id 'issues::create' \
-  --payload '{"workspace_id":"default","title":"ping","body":"does it work?"}'
-
-iii trigger --function-id 'runtimes::list' --payload '{}'   # grab runtime_id
-iii trigger --function-id 'issues::assign' \
-  --payload '{"issue_id":"<id>","agent_id":"<id>","runtime_id":"<id>"}'
-
-iii trigger --function-id 'issues::get' --payload '{"issue_id":"<id>"}'
+npm run smoke
 ```
+
+If you prefer the raw `iii trigger` calls, see `scripts/smoke.sh`.
 
 ### Real LLM run via OpenRouter
 
 ```bash
-# .env at workers/agent/.env
+# workers/provider-openrouter/.env
 OPENROUTER_API_KEY=sk-or-v1-...
 
 # policy + model routed through llm-router
@@ -208,10 +198,9 @@ Worker entry point reads them through `dotenv/config`. `iii.worker.yaml` does no
 
 ## Known limitations
 
-- `iii-worker-manager` RBAC port (49135) is not yet wired into the demo config; current setup connects the browser straight to 49134. Add an `iii-worker-manager` entry before exposing publicly.
+- `iii-worker-manager` RBAC port (49135) is not wired into the demo config; current setup connects the browser straight to 49134. Add an `iii-worker-manager` entry before exposing publicly.
 - `sandbox` v1 is a host-scoped directory per sandbox. Nested-microVM spawn (full per-run isolation) waits for the engine to expose worker management (`workers::add`, `workers::exec`, `workers::remove`) as iii functions. The `iii worker exec` CLI shipped in iii#1514 handles the runtime side but isn't reachable from inside a worker without an engine-level function.
 - `llm-router` needs an upstream fix (state envelope shape changed in v0.11.2). Tracked; swap to the registry version once released.
-- Workers still listed as "stopped" in `iii worker list` after config edits is cosmetic — functions stay registered. Run `iii worker restart <name>` to refresh the list.
 
 ## Design
 
@@ -219,4 +208,4 @@ See [`DESIGN.md`](./DESIGN.md). Visual language comes from the iii console verba
 
 ## License
 
-Apache-2.0.
+Apache-2.0. See [`LICENSE`](./LICENSE).
