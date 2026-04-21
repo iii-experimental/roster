@@ -1,0 +1,11 @@
+name: guardrails
+runtime:
+  language: typescript
+  package_manager: npm
+  entry: src/worker.ts
+resources:
+  memory: 512
+  cpus: 1
+scripts:
+  install: "npm install"
+  start: "npm run dev"
