@@ -104,10 +104,21 @@ export function buildSuggestion(params: {
     : { score: 0, avg: 0, n: 0 };
   const rtRes = runtimeAvailabilityScore(agent, runtimes);
 
-  const confidence =
-    WEIGHT_LABELS * labelRes.score +
-    WEIGHT_MEMORY * memRes.score +
-    WEIGHT_RUNTIME * rtRes.score;
+  // Redistribute weight across only the enabled components so a custom
+  // match_by (e.g. ['labels']) can still reach confidence=1 instead of being
+  // capped below the default threshold. Runtime weight is always live since
+  // it doesn't depend on match_by.
+  const weightBase: Array<{ w: number; active: boolean; score: number }> = [
+    { w: WEIGHT_LABELS, active: useLabels, score: labelRes.score },
+    { w: WEIGHT_MEMORY, active: useMemory, score: memRes.score },
+    { w: WEIGHT_RUNTIME, active: true, score: rtRes.score },
+  ];
+  const activeTotal = weightBase.reduce((sum, c) => sum + (c.active ? c.w : 0), 0);
+  const scale = activeTotal > 0 ? 1 / activeTotal : 1;
+  const confidence = weightBase.reduce(
+    (sum, c) => sum + (c.active ? c.w * scale * c.score : 0),
+    0,
+  );
 
   if (useLabels && labelRes.total > 0) {
     reasons.push(`${labelRes.matched}/${labelRes.total} labels matched capabilities`);
