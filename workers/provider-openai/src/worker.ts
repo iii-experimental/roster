@@ -20,6 +20,7 @@ process.on('unhandledRejection', (reason) => {
 const BASE = (process.env.OPENAI_BASE_URL ?? 'https://api.openai.com/v1').replace(/\/+$/, '');
 const ENDPOINT = `${BASE}/chat/completions`;
 const DEFAULT_MODEL = 'gpt-4o-mini';
+const REQUEST_TIMEOUT_MS = 120_000;
 
 type Msg = { role: 'system' | 'user' | 'assistant'; content: string };
 
@@ -55,9 +56,12 @@ iii.registerFunction('provider-openai::complete', async (input: CompleteInput): 
     return { ok: false, text: '', model: input.model, error: 'OPENAI_API_KEY not set' };
   }
 
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   try {
     const resp = await fetch(ENDPOINT, {
       method: 'POST',
+      signal: controller.signal,
       headers: { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model: input.model.replace(/^openai\//, '') || DEFAULT_MODEL,
@@ -82,7 +86,15 @@ iii.registerFunction('provider-openai::complete', async (input: CompleteInput): 
       usage: data.usage,
     };
   } catch (err) {
-    return { ok: false, text: '', model: input.model, error: String(err) };
+    const isAbort = err instanceof Error && err.name === 'AbortError';
+    return {
+      ok: false,
+      text: '',
+      model: input.model,
+      error: isAbort ? `timeout after ${REQUEST_TIMEOUT_MS}ms` : String(err),
+    };
+  } finally {
+    clearTimeout(timer);
   }
 });
 

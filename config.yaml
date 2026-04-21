@@ -81,7 +81,6 @@ workers:
     worker_path: ./workers/provider-cli
 
   # Registry worker. Resolves via `iii worker add llm-router` once it ships in
-  # iii-hq/workers. Until then, developers can point to a local checkout by
-  # setting III_LLM_ROUTER_PATH and uncommenting the override below.
+  # iii-hq/workers. During local development before then, add a worker_path
+  # line here pointing to your local checkout. See docs/providers.md.
   - name: llm-router
-    # worker_path: ${III_LLM_ROUTER_PATH}

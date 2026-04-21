@@ -52,12 +52,26 @@ async function listScope<T>(scope: string, prefix: string): Promise<T[]> {
 const listIssues = () => listScope<Issue>('issues', 'issue:');
 const listRuntimes = () => listScope<Runtime>('runtimes', 'runtime:');
 
+// The UI only renders 5 columns today. `blocked` surfaces as a review card
+// (needs attention), `abandoned` as a done card (terminal). Remapping here so
+// no issue is silently dropped from the board regardless of status.
+const STATUS_TO_COLUMN: Record<string, string> = {
+  open: 'open',
+  claimed: 'claimed',
+  running: 'running',
+  blocked: 'review',
+  review: 'review',
+  done: 'done',
+  abandoned: 'done',
+};
+
 function buildBoardOps(issues: Issue[]): Op[] {
   const columns: Record<string, Issue[]> = {
     open: [], claimed: [], running: [], review: [], done: [],
   };
   for (const i of issues) {
-    if (columns[i.status]) columns[i.status].push(i);
+    const col = STATUS_TO_COLUMN[i.status];
+    if (col && columns[col]) columns[col].push(i);
   }
 
   const ops: Op[] = [

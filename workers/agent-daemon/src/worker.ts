@@ -102,7 +102,9 @@ iii.registerFunction('agent-daemon::on_issue_claimed', async (event: { new_value
   const issue = event?.new_value;
   if (!issue || issue.status !== 'claimed') return { skipped: true };
   if (!issue.assignee_id) return { skipped: true };
-  if (issue.runtime_id && issue.runtime_id !== runtimeId) return { skipped: true };
+  // Require an explicit runtime_id match. A missing runtime_id on the issue
+  // is treated as "not mine" so it can't be claimed by every daemon at once.
+  if (!issue.runtime_id || issue.runtime_id !== runtimeId) return { skipped: true };
   return await iii.trigger({
     function_id: 'agent-daemon::run_claimed',
     payload: { issue_id: issue.id, agent_id: issue.assignee_id },

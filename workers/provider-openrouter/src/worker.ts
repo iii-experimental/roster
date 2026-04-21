@@ -20,6 +20,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 const ENDPOINT = 'https://openrouter.ai/api/v1/chat/completions';
+const REQUEST_TIMEOUT_MS = 120_000;
 
 type Msg = { role: 'system' | 'user' | 'assistant'; content: string };
 
@@ -55,9 +56,12 @@ iii.registerFunction('provider-openrouter::complete', async (input: CompleteInpu
     return { ok: false, text: '', model: input.model, error: 'OPENROUTER_API_KEY not set' };
   }
 
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   try {
     const resp = await fetch(ENDPOINT, {
       method: 'POST',
+      signal: controller.signal,
       headers: {
         'Authorization': `Bearer ${key}`,
         'Content-Type': 'application/json',
@@ -91,7 +95,15 @@ iii.registerFunction('provider-openrouter::complete', async (input: CompleteInpu
       },
     };
   } catch (err) {
-    return { ok: false, text: '', model: input.model, error: String(err) };
+    const isAbort = err instanceof Error && err.name === 'AbortError';
+    return {
+      ok: false,
+      text: '',
+      model: input.model,
+      error: isAbort ? `timeout after ${REQUEST_TIMEOUT_MS}ms` : String(err),
+    };
+  } finally {
+    clearTimeout(timer);
   }
 });
 

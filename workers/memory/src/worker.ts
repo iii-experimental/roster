@@ -170,6 +170,9 @@ iii.registerFunction(
   async (input: { workspace_id: string }) => {
     const all = await stateList<Mem>();
     const scoped = all.filter((m) => m.workspace_id === input.workspace_id);
+    // Deterministic dedup: keep the oldest record per body, discard the rest.
+    // Tie-break on id so two memories written in the same ms still order.
+    scoped.sort((a, b) => a.created_at - b.created_at || a.id.localeCompare(b.id));
     const seen = new Map<string, string>();
     let dropped = 0;
     for (const m of scoped) {

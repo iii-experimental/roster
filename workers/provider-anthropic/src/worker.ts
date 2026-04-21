@@ -20,6 +20,7 @@ process.on('unhandledRejection', (reason) => {
 const ENDPOINT = 'https://api.anthropic.com/v1/messages';
 const API_VERSION = '2023-06-01';
 const DEFAULT_MODEL = 'claude-sonnet-4-6';
+const REQUEST_TIMEOUT_MS = 120_000;
 
 type Msg = { role: 'user' | 'assistant'; content: string };
 
@@ -57,9 +58,12 @@ iii.registerFunction('provider-anthropic::complete', async (input: CompleteInput
   if (input.system) body.system = input.system;
   if (input.temperature !== undefined) body.temperature = input.temperature;
 
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   try {
     const resp = await fetch(ENDPOINT, {
       method: 'POST',
+      signal: controller.signal,
       headers: {
         'x-api-key': key,
         'anthropic-version': API_VERSION,
@@ -87,7 +91,15 @@ iii.registerFunction('provider-anthropic::complete', async (input: CompleteInput
       usage: { prompt_tokens: data.usage?.input_tokens, completion_tokens: data.usage?.output_tokens },
     };
   } catch (err) {
-    return { ok: false, text: '', model: input.model, error: String(err) };
+    const isAbort = err instanceof Error && err.name === 'AbortError';
+    return {
+      ok: false,
+      text: '',
+      model: input.model,
+      error: isAbort ? `timeout after ${REQUEST_TIMEOUT_MS}ms` : String(err),
+    };
+  } finally {
+    clearTimeout(timer);
   }
 });
 

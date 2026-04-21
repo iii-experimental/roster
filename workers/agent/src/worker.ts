@@ -142,10 +142,12 @@ iii.registerFunction(
     await stateSet(SCOPE, `agent_run:${runId}`, run);
 
     void executeRun(run, agent).catch(async (err) => {
+      log.error('run failed', { run_id: runId, error: String(err) });
+      const latest = await stateGet<Run>(SCOPE, `agent_run:${runId}`);
+      if (latest?.status === 'cancelled') return;
       run.status = 'failed';
       run.ended_at = Date.now();
       await stateSet(SCOPE, `agent_run:${runId}`, run);
-      log.error('run failed', { run_id: runId, error: String(err) });
     });
 
     return { run_id: runId };
@@ -255,7 +257,11 @@ async function executeRun(run: Run, agent: AgentDef) {
     },
   });
 
-  run.status = 'completed';
+  // Re-read before writing the terminal state so a concurrent cancel isn't
+  // overwritten. Provider failures end as 'failed', success as 'completed'.
+  const latest = await stateGet<Run>(SCOPE, `agent_run:${run.id}`);
+  if (latest?.status === 'cancelled') return;
+  run.status = result.ok ? 'completed' : 'failed';
   run.ended_at = Date.now();
   await stateSet(SCOPE, `agent_run:${run.id}`, run);
 }

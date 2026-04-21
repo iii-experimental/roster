@@ -102,6 +102,10 @@ iii.registerFunction(
   }),
 );
 
+// Track listeners per (element, event, trigger.function_id) so replays don't
+// stack duplicates. Keyed on the element via WeakMap so we can't leak nodes.
+const listeners = new WeakMap<Element, Map<string, EventListener>>();
+
 iii.registerFunction(
   `${PREFIX}::dom::addEventListener`,
   async (p: {
@@ -109,6 +113,12 @@ iii.registerFunction(
     event: string;
     trigger: { function_id: string; payload?: Record<string, unknown> };
   }) => {
+    const el = $(p.id);
+    const key = `${p.event}::${p.trigger.function_id}`;
+    const bucket = listeners.get(el) ?? new Map<string, EventListener>();
+    const existing = bucket.get(key);
+    if (existing) el.removeEventListener(p.event, existing);
+
     const listener: EventListener = (e) => {
       const target = e.target as
         | (HTMLInputElement & { checked?: boolean; value?: string; dataset: DOMStringMap })
@@ -121,7 +131,9 @@ iii.registerFunction(
       };
       void iii.trigger({ function_id: p.trigger.function_id, payload });
     };
-    $(p.id).addEventListener(p.event, listener);
+    el.addEventListener(p.event, listener);
+    bucket.set(key, listener);
+    listeners.set(el, bucket);
     return { ok: true };
   },
 );
@@ -197,16 +209,22 @@ function currentView(): string {
 }
 
 let currentScope: { scope: string; key: string } | null = null;
+// Keys we've already asked the engine to subscribe us to. Re-registering the
+// same trigger wastes work and duplicates state-reaction fan-out.
+const registeredRosterKeys = new Set<string>();
 
 async function subscribeTo(view: string) {
   const key = `ui::${view}`;
   if (currentScope?.scope === 'roster' && currentScope.key === key) return;
   currentScope = { scope: 'roster', key };
-  iii.registerTrigger({
-    type: 'state',
-    function_id: `${PREFIX}::ui::apply`,
-    config: { scope: 'roster', key },
-  });
+  if (!registeredRosterKeys.has(key)) {
+    iii.registerTrigger({
+      type: 'state',
+      function_id: `${PREFIX}::ui::apply`,
+      config: { scope: 'roster', key },
+    });
+    registeredRosterKeys.add(key);
+  }
   await iii.trigger({
     function_id: 'roster-orchestrator::rehydrate',
     payload: { tab_id: tabId, view },

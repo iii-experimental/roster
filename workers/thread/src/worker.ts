@@ -27,10 +27,16 @@ type Msg = {
 const stateSet = (key: string, value: unknown) =>
   iii.trigger({ function_id: 'state::set', payload: { scope: SCOPE, key, value } });
 
+const stateGet = async <T>(key: string): Promise<T | null> =>
+  ((await iii.trigger({ function_id: 'state::get', payload: { scope: SCOPE, key } })) as T | null) ?? null;
+
 const stateList = async <T>(prefix: string): Promise<T[]> => {
   const v = await iii.trigger({ function_id: 'state::list', payload: { scope: SCOPE, prefix } });
   return Array.isArray(v) ? (v as T[]) : [];
 };
+
+const threadExists = async (thread_id: string) =>
+  (await stateGet<Thread>(`thread:${thread_id}`)) !== null;
 
 iii.registerFunction(
   'thread::open',
@@ -52,6 +58,9 @@ iii.registerFunction(
     markdown?: boolean;
     attachments?: string[];
   }) => {
+    if (!(await threadExists(input.thread_id))) {
+      return { ok: false, error: 'thread not found' };
+    }
     const ts = Date.now();
     const uuid = crypto.randomUUID().slice(0, 8);
     const msg: Msg = {
@@ -68,6 +77,9 @@ iii.registerFunction(
 );
 
 iii.registerFunction('thread::list', async (input: { thread_id: string; limit?: number }) => {
+  if (!(await threadExists(input.thread_id))) {
+    return { ok: false, error: 'thread not found', messages: [] };
+  }
   const all = await stateList<Msg>(`msg:${input.thread_id}:`);
   all.sort((a, b) => a.ts - b.ts);
   const limit = input.limit ?? 200;

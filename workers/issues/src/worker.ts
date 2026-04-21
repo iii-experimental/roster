@@ -72,6 +72,12 @@ iii.registerFunction(
   async (input: { issue_id: string; agent_id: string; runtime_id: string }) => {
     const issue = await stateGet<Issue>(`issue:${input.issue_id}`);
     if (!issue) throw new Error(`issue not found: ${input.issue_id}`);
+    // The engine does not expose a compare-and-set on state today, so this is
+    // a best-effort guard against double-claim. Engine-level CAS will replace
+    // this once available.
+    if (issue.status === 'claimed' || issue.status === 'running' || issue.status === 'review') {
+      return { ok: false, error: 'already claimed', issue_id: input.issue_id, status: issue.status };
+    }
     const prev = issue.status;
     issue.assignee_id = input.agent_id;
     issue.runtime_id = input.runtime_id;

@@ -16,14 +16,34 @@ process.on('unhandledRejection', (reason) => {
 const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_OUTPUT_BYTES = 1024 * 1024;
 
-const DENY_PREFIX = [
-  'rm ', 'rmdir ', 'mkfs', 'dd ', 'shutdown', 'reboot', 'mount ',
-  'umount ', 'sudo', 'su ', ':(){ :|:& };:',
-];
+const DENY_BINS = new Set([
+  'rm', 'rmdir', 'mkfs', 'dd', 'shutdown', 'reboot', 'mount',
+  'umount', 'sudo', 'su', 'halt', 'poweroff', 'init',
+]);
 
-function isDenied(cmd: string): boolean {
-  const lower = cmd.trim().toLowerCase();
-  return DENY_PREFIX.some((p) => lower.startsWith(p));
+// Interpreters that can smuggle a denied command as an argument. When one of
+// these is the exec, scan its args for the real work too.
+const INTERPRETERS = new Set(['env', 'sh', 'bash', 'zsh', 'dash', 'ash', 'ksh']);
+
+function basename(token: string): string {
+  const t = token.replace(/^['"]|['"]$/g, '').trim();
+  const slash = t.lastIndexOf('/');
+  return (slash === -1 ? t : t.slice(slash + 1)).toLowerCase();
+}
+
+function isDenied(cmd: string, args: readonly string[] = []): boolean {
+  const exe = basename(cmd);
+  if (DENY_BINS.has(exe)) return true;
+  if (exe === ':') return true; // classic fork-bomb alias
+  if (INTERPRETERS.has(exe)) {
+    // Any positional arg that resolves to a denied bin is also rejected.
+    for (const a of args) {
+      if (typeof a !== 'string') continue;
+      const firstToken = a.trim().split(/\s+/)[0] ?? '';
+      if (firstToken && DENY_BINS.has(basename(firstToken))) return true;
+    }
+  }
+  return false;
 }
 
 function truncate(buf: string, max: number): string {
@@ -40,7 +60,7 @@ iii.registerFunction(
     timeout_ms?: number;
     stdin?: string;
   }) => {
-    if (isDenied(input.cmd)) {
+    if (isDenied(input.cmd, input.args ?? [])) {
       throw new Error(`command denied by policy: ${input.cmd}`);
     }
     const timeout = input.timeout_ms ?? DEFAULT_TIMEOUT_MS;

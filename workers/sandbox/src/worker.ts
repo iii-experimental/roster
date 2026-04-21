@@ -18,6 +18,25 @@ const SANDBOX_ROOT = join(STATE_DIR, 'sandbox');
 const DEFAULT_TIMEOUT_MS = 120_000;
 const MAX_OUTPUT_BYTES = 1024 * 1024;
 
+// Never forward the sandbox worker's own environment to the spawned child.
+// Agents can leak secrets otherwise. Build a minimal shell environment and
+// let callers add their own sanitized entries via input.env.
+const SANDBOX_ENV_ALLOW = ['PATH', 'HOME', 'LANG', 'LC_ALL', 'TERM', 'USER', 'TMPDIR'] as const;
+
+function buildSandboxEnv(extra?: Record<string, string>): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const key of SANDBOX_ENV_ALLOW) {
+    const v = process.env[key];
+    if (v !== undefined) env[key] = v;
+  }
+  if (extra) {
+    for (const [k, v] of Object.entries(extra)) {
+      if (typeof v === 'string' && /^[A-Z_][A-Z0-9_]*$/.test(k)) env[k] = v;
+    }
+  }
+  return env;
+}
+
 type Sandbox = {
   id: string;
   path: string;
@@ -110,7 +129,7 @@ iii.registerFunction(
       (resolveP, reject) => {
         const child = spawn(input.cmd, input.args ?? [], {
           cwd: box.path,
-          env: { ...process.env, ...(input.env ?? {}) },
+          env: buildSandboxEnv(input.env),
           timeout,
           shell: false,
         });

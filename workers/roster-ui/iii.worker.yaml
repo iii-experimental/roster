@@ -8,4 +8,4 @@ resources:
   cpus: 1
 scripts:
   install: "npm install"
-  start: "npm run dev -- --host 0.0.0.0"
+  start: "sh -c 'npm run dev -- --host \"${VITE_HOST:-127.0.0.1}\"'"
