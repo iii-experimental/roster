@@ -1,5 +1,5 @@
 import { registerWorker, Logger } from 'iii-sdk';
-import { mkdir, writeFile, readFile, rm } from 'node:fs/promises';
+import { mkdir, writeFile, readFile, rm, stat } from 'node:fs/promises';
 import { join, resolve as pathResolve } from 'node:path';
 import { spawn } from 'node:child_process';
 
@@ -54,10 +54,35 @@ function resolveSafe(sandboxDir: string, rel: string): string {
   return abs;
 }
 
+// UUID-ish key format: accept anything that doesn't contain a path separator.
+// Prevents `sandbox_id: "../etc"` shenanigans when rebuilding from the id.
+const SAFE_ID_RE = /^[a-zA-Z0-9_-]+$/;
+
+async function resolveSandbox(sandbox_id: string): Promise<Sandbox | null> {
+  const cached = sandboxes.get(sandbox_id);
+  if (cached) return cached;
+  if (!SAFE_ID_RE.test(sandbox_id)) return null;
+  // Rebuild from disk after a worker restart. Map is in-memory only; sandbox
+  // dirs are durable under SANDBOX_ROOT.
+  const path = join(SANDBOX_ROOT, sandbox_id);
+  try {
+    const st = await stat(path);
+    if (!st.isDirectory()) return null;
+    const box: Sandbox = { id: sandbox_id, path, created_at: st.birthtimeMs || st.mtimeMs };
+    sandboxes.set(sandbox_id, box);
+    return box;
+  } catch {
+    return null;
+  }
+}
+
+// Byte-aware truncate. `string.length` counts UTF-16 code units, which can let
+// multibyte UTF-8 output slip past MAX_OUTPUT_BYTES. Operate on Buffer bytes.
 function truncate(buf: string): string {
-  return buf.length > MAX_OUTPUT_BYTES
-    ? `${buf.slice(0, MAX_OUTPUT_BYTES)}\n... [truncated]`
-    : buf;
+  const bytes = Buffer.byteLength(buf, 'utf8');
+  if (bytes <= MAX_OUTPUT_BYTES) return buf;
+  const sliced = Buffer.from(buf, 'utf8').subarray(0, MAX_OUTPUT_BYTES).toString('utf8');
+  return `${sliced}\n... [truncated]`;
 }
 
 iii.registerFunction(
@@ -83,7 +108,7 @@ iii.registerFunction(
 iii.registerFunction(
   'sandbox::write_files',
   async (input: { sandbox_id: string; files: { path: string; content: string; mode?: number }[] }) => {
-    const box = sandboxes.get(input.sandbox_id);
+    const box = await resolveSandbox(input.sandbox_id);
     if (!box) throw new Error(`sandbox not found: ${input.sandbox_id}`);
     for (const f of input.files) {
       const abs = resolveSafe(box.path, f.path);
@@ -97,7 +122,7 @@ iii.registerFunction(
 iii.registerFunction(
   'sandbox::read_files',
   async (input: { sandbox_id: string; paths: string[] }) => {
-    const box = sandboxes.get(input.sandbox_id);
+    const box = await resolveSandbox(input.sandbox_id);
     if (!box) throw new Error(`sandbox not found: ${input.sandbox_id}`);
     const out: Record<string, string> = {};
     for (const p of input.paths) {
@@ -121,7 +146,7 @@ iii.registerFunction(
     timeout_ms?: number;
     env?: Record<string, string>;
   }) => {
-    const box = sandboxes.get(input.sandbox_id);
+    const box = await resolveSandbox(input.sandbox_id);
     if (!box) throw new Error(`sandbox not found: ${input.sandbox_id}`);
     const started = Date.now();
     const timeout = input.timeout_ms ?? DEFAULT_TIMEOUT_MS;
@@ -133,15 +158,21 @@ iii.registerFunction(
           timeout,
           shell: false,
         });
+        // Track bytes written, not string length, so multibyte UTF-8 output
+        // can't silently exceed MAX_OUTPUT_BYTES.
         let stdout = '';
         let stderr = '';
+        let stdoutBytes = 0;
+        let stderrBytes = 0;
         child.stdout.on('data', (d: Buffer) => {
-          stdout += d.toString();
-          if (stdout.length > MAX_OUTPUT_BYTES) child.kill('SIGTERM');
+          stdoutBytes += d.byteLength;
+          stdout += d.toString('utf8');
+          if (stdoutBytes > MAX_OUTPUT_BYTES) child.kill('SIGTERM');
         });
         child.stderr.on('data', (d: Buffer) => {
-          stderr += d.toString();
-          if (stderr.length > MAX_OUTPUT_BYTES) child.kill('SIGTERM');
+          stderrBytes += d.byteLength;
+          stderr += d.toString('utf8');
+          if (stderrBytes > MAX_OUTPUT_BYTES) child.kill('SIGTERM');
         });
         child.on('error', reject);
         child.on('close', (code) => {
@@ -158,8 +189,15 @@ iii.registerFunction(
 );
 
 iii.registerFunction('sandbox::destroy', async (input: { sandbox_id: string }) => {
-  const box = sandboxes.get(input.sandbox_id);
-  if (!box) return { ok: true, noop: true };
+  const box = await resolveSandbox(input.sandbox_id);
+  if (!box) {
+    // Still try to remove the directory in case the map entry was evicted but
+    // the on-disk sandbox remains.
+    if (SAFE_ID_RE.test(input.sandbox_id)) {
+      await rm(join(SANDBOX_ROOT, input.sandbox_id), { recursive: true, force: true });
+    }
+    return { ok: true, noop: true };
+  }
   await rm(box.path, { recursive: true, force: true });
   sandboxes.delete(input.sandbox_id);
   return { ok: true };

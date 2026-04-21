@@ -185,22 +185,34 @@ type StateEvent = {
   event_type?: string;
 };
 
+// Track the last generation applied per scope key so stale snapshots (arriving
+// late due to network reorder or replay) don't clobber a newer state.
+const appliedGenerations = new Map<string, number>();
+
 iii.registerFunction(`${PREFIX}::ui::apply`, async (event: StateEvent | Snapshot) => {
   const snap: Snapshot =
     event && typeof event === 'object' && 'new_value' in event
       ? (event.new_value ?? null)
       : (event as Snapshot);
   if (!snap || !Array.isArray(snap.ops)) return { ok: true, applied: 0 };
+  const scopeKey = event && typeof event === 'object' && 'key' in event
+    ? (event.key ?? '') : '';
+  const gen = typeof snap.generation === 'number' ? snap.generation : 0;
+  const last = appliedGenerations.get(scopeKey) ?? -1;
+  if (gen <= last) return { ok: true, applied: 0, skipped_stale: true };
+  appliedGenerations.set(scopeKey, gen);
+  let applied = 0;
   for (const op of snap.ops) {
     const impl = PRIMS[op.fn];
     if (!impl) continue;
     try {
       await impl(op.payload);
+      applied += 1;
     } catch {
       // idempotent best-effort; skip ops whose target nodes aren't mounted yet
     }
   }
-  return { ok: true, applied: snap.ops.length };
+  return { ok: true, applied };
 });
 
 function currentView(): string {

@@ -165,11 +165,32 @@ async function renderRuntimes() {
   await publishView('runtimes', buildRuntimesOps(await listRuntimes()));
 }
 
+async function renderPlaceholder(view: string) {
+  const label = view.charAt(0).toUpperCase() + view.slice(1);
+  await publishView(view as 'agents' | 'runs' | 'settings', [
+    { fn: 'setTitle', payload: { title: `roster · ${view}` } },
+    { fn: 'setText', payload: { id: 'viewTitle', text: label } },
+    { fn: 'setText', payload: { id: 'viewStats', text: '(placeholder view)' } },
+    { fn: 'clearChildren', payload: { id: view } },
+  ]);
+}
+
 iii.registerFunction('roster-orchestrator::rehydrate', async (input: { tab_id?: string; view: string }) => {
   switch (input.view) {
-    case 'board': await renderBoard(); break;
-    case 'runtimes': await renderRuntimes(); break;
-    default: await renderBoard(); break;
+    case 'board':
+      await renderBoard();
+      break;
+    case 'runtimes':
+      await renderRuntimes();
+      break;
+    case 'agents':
+    case 'settings':
+    case 'runs':
+      await renderPlaceholder(input.view);
+      break;
+    default:
+      await renderPlaceholder(input.view);
+      break;
   }
   return { ok: true };
 });

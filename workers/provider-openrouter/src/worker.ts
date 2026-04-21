@@ -20,6 +20,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 const ENDPOINT = 'https://openrouter.ai/api/v1/chat/completions';
+const DEFAULT_MODEL = 'openai/gpt-4o-mini';
 const REQUEST_TIMEOUT_MS = 120_000;
 
 type Msg = { role: 'system' | 'user' | 'assistant'; content: string };
@@ -73,7 +74,7 @@ iii.registerFunction('provider-openrouter::complete', async (input: CompleteInpu
         'X-Title': 'roster',
       },
       body: JSON.stringify({
-        model: input.model.replace(/^openrouter\//, ''),
+        model: input.model.replace(/^openrouter\//, '') || DEFAULT_MODEL,
         messages,
         max_tokens: input.max_tokens ?? 512,
         temperature: input.temperature,

@@ -79,14 +79,16 @@ iii.registerFunction('agent-daemon::run_claimed', async (input: { issue_id: stri
       if (run.status === 'completed' || run.status === 'failed' || run.status === 'cancelled') break;
     }
 
+    // Only flip the issue when the run reached a terminal state. If polling
+    // timed out with run still 'running', mark blocked with a distinct reason
+    // so it's visible that a human should investigate — the agent may still
+    // be working in the background.
+    const isTerminal = run?.status === 'completed' || run?.status === 'failed' || run?.status === 'cancelled';
     const nextStatus = run?.status === 'completed' ? 'review' : 'blocked';
+    const reason = isTerminal ? (run?.status ?? 'unknown') : 'daemon-poll-timeout';
     await iii.trigger({
       function_id: 'issues::status_set',
-      payload: {
-        issue_id: input.issue_id,
-        status: nextStatus,
-        reason: run?.status ?? 'unknown',
-      },
+      payload: { issue_id: input.issue_id, status: nextStatus, reason },
     });
   } catch (err) {
     log.error('run_claimed failed', { error: String(err) });
@@ -117,7 +119,7 @@ iii.registerTrigger({
   config: { scope: 'issues' },
 });
 
-async function registerWithRetry() {
+async function registerWithRetry(): Promise<void> {
   for (let i = 0; i < 30; i++) {
     try {
       await registerSelf();
@@ -127,7 +129,7 @@ async function registerWithRetry() {
       await new Promise((r) => setTimeout(r, 2000));
     }
   }
-  log.error('registerSelf failed after 30 attempts, giving up');
+  throw new Error('registerSelf failed after 30 attempts');
 }
 
 process.on('unhandledRejection', (reason) => {
@@ -135,7 +137,12 @@ process.on('unhandledRejection', (reason) => {
 });
 
 (async () => {
-  await registerWithRetry();
+  try {
+    await registerWithRetry();
+  } catch (err) {
+    log.error('agent-daemon startup failed, exiting for supervisor restart', { error: String(err) });
+    process.exit(1);
+  }
   setInterval(() => {
     heartbeat().catch((err) => log.warn('heartbeat err', { error: String(err) }));
   }, HEARTBEAT_MS);

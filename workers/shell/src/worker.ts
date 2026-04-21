@@ -1,13 +1,50 @@
+import { spawn } from 'node:child_process';
+import { access, constants } from 'node:fs/promises';
+import { join } from 'node:path';
 import { registerWorker, Logger } from 'iii-sdk';
-import { spawn, execFile } from 'node:child_process';
-import { promisify } from 'node:util';
 
 const iii = registerWorker(
   process.env.III_URL ?? 'ws://localhost:49134',
   { workerName: 'shell' },
 );
 const log = new Logger();
-const execFileAsync = promisify(execFile);
+
+// Accept only plain executable names: no slashes, no shell metachars. Prevents
+// injection through shell::which bin names.
+const SAFE_BIN_RE = /^[A-Za-z0-9_.+-]+$/;
+
+async function resolveOnPath(bin: string): Promise<string | null> {
+  if (!SAFE_BIN_RE.test(bin)) return null;
+  const paths = (process.env.PATH ?? '').split(':').filter(Boolean);
+  for (const dir of paths) {
+    const candidate = join(dir, bin);
+    try {
+      await access(candidate, constants.X_OK);
+      return candidate;
+    } catch {
+      // next
+    }
+  }
+  return null;
+}
+
+// Never forward the worker's own environment to a spawned child. Build a
+// minimal allowlist, then merge input.env entries that pass a key-name check.
+const SHELL_ENV_ALLOW = ['PATH', 'HOME', 'LANG', 'LC_ALL', 'TERM', 'USER', 'TMPDIR'] as const;
+
+function buildShellEnv(extra?: Record<string, string>): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const key of SHELL_ENV_ALLOW) {
+    const v = process.env[key];
+    if (v !== undefined) env[key] = v;
+  }
+  if (extra) {
+    for (const [k, v] of Object.entries(extra)) {
+      if (typeof v === 'string' && /^[A-Z_][A-Z0-9_]*$/.test(k)) env[k] = v;
+    }
+  }
+  return env;
+}
 
 process.on('unhandledRejection', (reason) => {
   log.error('shell unhandled rejection', { reason: String(reason) });
@@ -47,7 +84,10 @@ function isDenied(cmd: string, args: readonly string[] = []): boolean {
 }
 
 function truncate(buf: string, max: number): string {
-  return buf.length > max ? `${buf.slice(0, max)}\n... [truncated ${buf.length - max}b]` : buf;
+  const bytes = Buffer.byteLength(buf, 'utf8');
+  if (bytes <= max) return buf;
+  const sliced = Buffer.from(buf, 'utf8').subarray(0, max).toString('utf8');
+  return `${sliced}\n... [truncated ${bytes - max}b]`;
 }
 
 iii.registerFunction(
@@ -70,21 +110,25 @@ iii.registerFunction(
       (resolve, reject) => {
         const child = spawn(input.cmd, input.args ?? [], {
           cwd: input.cwd,
-          env: { ...process.env, ...(input.env ?? {}) },
+          env: buildShellEnv(input.env),
           timeout,
           shell: false,
         });
 
         let stdout = '';
         let stderr = '';
+        let stdoutBytes = 0;
+        let stderrBytes = 0;
 
         child.stdout.on('data', (d: Buffer) => {
-          stdout += d.toString();
-          if (stdout.length > MAX_OUTPUT_BYTES) child.kill('SIGTERM');
+          stdoutBytes += d.byteLength;
+          stdout += d.toString('utf8');
+          if (stdoutBytes > MAX_OUTPUT_BYTES) child.kill('SIGTERM');
         });
         child.stderr.on('data', (d: Buffer) => {
-          stderr += d.toString();
-          if (stderr.length > MAX_OUTPUT_BYTES) child.kill('SIGTERM');
+          stderrBytes += d.byteLength;
+          stderr += d.toString('utf8');
+          if (stderrBytes > MAX_OUTPUT_BYTES) child.kill('SIGTERM');
         });
 
         if (input.stdin) {
@@ -107,13 +151,7 @@ iii.registerFunction(
 );
 
 iii.registerFunction('shell::which', async (input: { bin: string }) => {
-  try {
-    const { stdout } = await execFileAsync('command', ['-v', input.bin], { shell: '/bin/sh' });
-    const path = stdout.trim();
-    return { path: path || null };
-  } catch {
-    return { path: null };
-  }
+  return { path: await resolveOnPath(input.bin) };
 });
 
 iii.registerFunction(
@@ -125,12 +163,7 @@ iii.registerFunction(
     ];
     const found: string[] = [];
     for (const bin of candidates) {
-      try {
-        await execFileAsync('command', ['-v', bin], { shell: '/bin/sh' });
-        found.push(bin);
-      } catch {
-        // not installed
-      }
+      if (await resolveOnPath(bin)) found.push(bin);
     }
     return { clis: found };
   },
