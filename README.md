@@ -237,9 +237,11 @@ Worker entry point reads them through `dotenv/config`. `iii.worker.yaml` does no
 ## Known limitations
 
 - `iii-worker-manager` RBAC port (49135) is not wired into the demo config; current setup connects the browser straight to 49134. Add an `iii-worker-manager` entry before exposing publicly.
-- `sandbox` v1 is a host-scoped directory per sandbox. Nested-microVM spawn (full per-run isolation) waits for the planned engine-level sandbox worker that exposes `workers::add` / `workers::exec` / `workers::remove` as iii functions.
-- `autopilot` worker is commented out in `config.yaml` pending stability work on auto-claim loops.
-- The `roster-ui` worker in `config.yaml` expects port 5173; run vite on the host (`cd workers/roster-ui && npx vite --port 5173`) during dev since the worker's own VM will clash if the host port is already bound.
+- `sandbox` v1 is a host-scoped directory per sandbox. Nested-microVM spawn (full per-run isolation) is blocked on the planned engine-level sandbox worker that exposes `workers::add` / `workers::exec` / `workers::remove` as iii functions. Not started upstream.
+
+## Development notes
+
+- `roster-ui` worker boots vite inside its own microVM on port 5173. If you also want host-side vite for faster HMR during development, stop the worker first (`iii worker stop roster-ui`) and run `cd workers/roster-ui && npx vite --port 5173` on the host. Otherwise leave the worker running and access the board through the VM's port forward.
 
 ## Design
 
