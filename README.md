@@ -14,7 +14,7 @@ Assign an issue to an agent. Agent claims it, runs inside its own microVM, calls
 
 ## What's in the box
 
-14 workers wired today. More planned in `spec.md`.
+21 workers wired today.
 
 | Worker | Language | Role |
 |---|---|---|
@@ -33,6 +33,15 @@ Assign an issue to an agent. Agent claims it, runs inside its own microVM, calls
 | `provider-openai` ★ | TypeScript (registry) | `provider-openai::complete` — OpenAI Chat Completions direct. `OPENAI_API_KEY`, `OPENAI_BASE_URL` for Azure/compat endpoints. |
 | `provider-cli` ★ | TypeScript (registry) | `provider-cli::complete` — wraps CLI tools via `shell::exec`: `claude`, `codex`, `opencode`, `openclaw`, `hermes`, `pi`, `gemini`, `cursor-agent`. |
 | `llm-router` ★ | Rust (registry) | `router::decide`, `policy_*`, `classify`, `ab_*`, `health_*`, `model_*`, `stats`. Unopinionated — no baked-in catalog. |
+| `meter` ☆ | TypeScript | Atomic counters + windows + threshold alerts. Replaces every `state::get → increment → set` pattern. Used by `llm-budget` + usage tracking. |
+| `guardrails` ☆ | TypeScript | `check_input`, `check_output`, `classify`. Local heuristics: PII, leaked API keys, jailbreak keywords, toxicity scoring. |
+| `llm-budget` ☆ | TypeScript | 14 functions: spend caps + alerts + forecast + period rollover. Per-workspace / per-agent ceilings. Per-budget mutex, UTC boundaries. |
+| `auth` ☆ | TypeScript | HMAC API keys + workspace RBAC (owner/admin/member/viewer). Full-hash lookup, timing-safe compare, dotenv secret. |
+| `repocache` ☆ | TypeScript | Git clone cache keyed by `(url, ref)`. State-backed mutex per key. Hourly cron prune. Strict URL/ref validation. |
+| `mention` ☆ | TypeScript | `mention::parse` + state-reaction `notify`. Parses `@agent:<id>`, `@user:<id>`, `@issue#N`, `@run#<id>`. |
+| `autopilot` ☆ | TypeScript | Auto-triage open issues to matching agents. Off by default. Memory + label + runtime-health weighted scoring with renormalization. |
+
+★ = registry-owned, pulled in by name. ☆ = local, graduates to registry when stable.
 
 ### Provider routing
 
@@ -48,7 +57,6 @@ Model ids look like `<provider>/<slug>`. Router returns a model id; agent dispat
 
 Add a new provider = one new narrow worker with `provider-<name>::complete({model, prompt, ...}) -> {ok, text, usage?}`. Register a policy in `llm-router` that returns `<name>/<slug>`. Agent picks it up with zero code changes.
 
-★ = not owned by roster. Lives in the workers repo, pulled in via config.
 
 ## Ports
 
