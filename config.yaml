@@ -130,10 +130,11 @@ workers:
     worker_path: ./workers/provider-cli
 
   # Registry worker. Resolves via `iii worker add llm-router` once it ships in
-  # iii-hq/workers. During local development before then, add a worker_path
-  # line here pointing to your local checkout. See docs/providers.md.
+  # iii-hq/workers. For local development before then, add a relative
+  # `worker_path:` line (e.g. `worker_path: ./workers/llm-router`) pointing to
+  # your local checkout. Do NOT commit an absolute path — it won't work on
+  # other machines or in CI. See docs/providers.md.
   - name: llm-router
-    worker_path: /tmp/workers-pr32/llm-router
 
   # Phase-2 narrow workers (graduate to iii-hq/workers once stable).
   - name: meter

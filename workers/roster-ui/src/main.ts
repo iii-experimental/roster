@@ -423,31 +423,58 @@ function openFormModal(opts: {
   const layer = $('modalLayer');
   const wrap = document.createElement('div');
   wrap.className = 'modalWrap';
-  const fieldsHtml = opts.fields
-    .map((f) => {
-      const ctl =
-        f.type === 'textarea'
-          ? `<textarea class="modalTextarea" name="${f.name}" placeholder="${f.placeholder ?? ''}" ${f.required ? 'required' : ''}></textarea>`
-          : `<input class="modalInput" name="${f.name}" type="text" placeholder="${f.placeholder ?? ''}" ${f.required ? 'required' : ''} />`;
-      return `<div class="modalField"><label class="modalLabel">${f.label}</label>${ctl}</div>`;
-    })
-    .join('');
-  wrap.innerHTML = `
-    <form class="modal" novalidate>
-      <h3 class="modalTitle"></h3>
-      ${opts.body ? '<p class="modalBody"></p>' : ''}
-      ${fieldsHtml}
-      <div class="modalActions">
-        <button type="button" class="btn cancelBtn">Cancel</button>
-        <button type="submit" class="btn accent submitBtn"></button>
-      </div>
-    </form>`;
-  (wrap.querySelector('.modalTitle') as HTMLElement).textContent = opts.title;
-  if (opts.body) (wrap.querySelector('.modalBody') as HTMLElement).textContent = opts.body;
-  (wrap.querySelector('.submitBtn') as HTMLElement).textContent = opts.submitLabel;
-  const form = wrap.querySelector('form') as HTMLFormElement;
-  const submitBtn = wrap.querySelector('.submitBtn') as HTMLButtonElement;
-  (wrap.querySelector('.cancelBtn') as HTMLButtonElement).onclick = () => wrap.remove();
+
+  const form = document.createElement('form');
+  form.className = 'modal';
+  form.noValidate = true;
+
+  const titleEl = document.createElement('h3');
+  titleEl.className = 'modalTitle';
+  titleEl.textContent = opts.title;
+  form.appendChild(titleEl);
+
+  if (opts.body) {
+    const bodyEl = document.createElement('p');
+    bodyEl.className = 'modalBody';
+    bodyEl.textContent = opts.body;
+    form.appendChild(bodyEl);
+  }
+
+  for (const f of opts.fields) {
+    const fieldWrap = document.createElement('div');
+    fieldWrap.className = 'modalField';
+    const label = document.createElement('label');
+    label.className = 'modalLabel';
+    label.textContent = f.label;
+    fieldWrap.appendChild(label);
+    const ctl = f.type === 'textarea'
+      ? document.createElement('textarea')
+      : document.createElement('input');
+    ctl.className = f.type === 'textarea' ? 'modalTextarea' : 'modalInput';
+    ctl.name = f.name;
+    if (f.placeholder) ctl.placeholder = f.placeholder;
+    if (f.required) ctl.required = true;
+    if (f.type !== 'textarea') (ctl as HTMLInputElement).type = 'text';
+    fieldWrap.appendChild(ctl);
+    form.appendChild(fieldWrap);
+  }
+
+  const actions = document.createElement('div');
+  actions.className = 'modalActions';
+  const cancelBtn = document.createElement('button');
+  cancelBtn.type = 'button';
+  cancelBtn.className = 'btn cancelBtn';
+  cancelBtn.textContent = 'Cancel';
+  cancelBtn.onclick = () => wrap.remove();
+  actions.appendChild(cancelBtn);
+  const submitBtn = document.createElement('button');
+  submitBtn.type = 'submit';
+  submitBtn.className = 'btn accent submitBtn';
+  submitBtn.textContent = opts.submitLabel;
+  actions.appendChild(submitBtn);
+  form.appendChild(actions);
+
+  wrap.appendChild(form);
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     const data = new FormData(form);
