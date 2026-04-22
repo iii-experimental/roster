@@ -237,7 +237,7 @@ Worker entry point reads them through `dotenv/config`. `iii.worker.yaml` does no
 ## Known limitations
 
 - `iii-worker-manager` RBAC port (49135) is not wired into the demo config; current setup connects the browser straight to 49134. Add an `iii-worker-manager` entry before exposing publicly.
-- `sandbox` v1 is a host-scoped directory per sandbox. Nested-microVM spawn (full per-run isolation) is blocked on the planned engine-level sandbox worker that exposes `workers::add` / `workers::exec` / `workers::remove` as iii functions. Not started upstream.
+- `sandbox` v1 gives each run a scoped directory inside the sandbox worker's own microVM. Per-run **fresh microVM** isolation needs the engine to expose `workers::add` / `workers::exec` / `workers::remove` as iii **functions** (callable over the WS bridge from any worker). iii 0.11.3 already has host-side `iii worker exec` (commit iii#f38f0ea) and `engine::workers::register` for self-registration (iii#3f05593), but not the worker-callable add/exec/remove surface roster's sandbox would need to spawn a fresh sibling per run.
 
 ## Development notes
 
