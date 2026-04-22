@@ -8,6 +8,10 @@ const log = new Logger();
 
 const SCOPE = 'runtimes';
 const HEARTBEAT_TTL_MS = 90_000;
+// Runtimes offline for longer than this are hard-deleted by gc so stale
+// agent-daemon boots (which register a new id on every cold-start) don't
+// pile up forever.
+const OFFLINE_DELETE_MS = 10 * 60_000;
 
 type Runtime = {
   id: string;
@@ -71,18 +75,31 @@ iii.registerFunction('runtimes::revoke', async (input: { runtime_id: string }) =
   return { ok: true };
 });
 
+const stateDelete = (key: string) =>
+  iii.trigger({ function_id: 'state::delete', payload: { scope: SCOPE, key } });
+
 iii.registerFunction('runtimes::gc', async () => {
   const all = await stateList<Runtime>('runtime:');
-  const cutoff = Date.now() - HEARTBEAT_TTL_MS;
+  const now = Date.now();
+  const offlineCutoff = now - HEARTBEAT_TTL_MS;
+  const deleteCutoff = now - OFFLINE_DELETE_MS;
+  const ops: Promise<unknown>[] = [];
   let marked = 0;
+  let deleted = 0;
   for (const rt of all) {
-    if (rt.status === 'online' && rt.last_heartbeat < cutoff) {
+    if (rt.status === 'online' && rt.last_heartbeat < offlineCutoff) {
       rt.status = 'offline';
-      await stateSet(`runtime:${rt.id}`, rt);
+      ops.push(stateSet(`runtime:${rt.id}`, rt));
       marked += 1;
+      continue;
+    }
+    if ((rt.status === 'offline' || rt.status === 'revoked') && rt.last_heartbeat < deleteCutoff) {
+      ops.push(stateDelete(`runtime:${rt.id}`));
+      deleted += 1;
     }
   }
-  return { marked_offline: marked };
+  await Promise.all(ops);
+  return { marked_offline: marked, deleted };
 });
 
 try {

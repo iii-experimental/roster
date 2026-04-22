@@ -290,6 +290,11 @@ async function applyRoute(route: Route) {
   for (const v of document.querySelectorAll('.view')) v.classList.remove('active');
   const viewEl = document.getElementById(viewElementId(route));
   if (viewEl) viewEl.classList.add('active');
+
+  const newTask = document.getElementById('btnNewTask') as HTMLButtonElement | null;
+  const newAgent = document.getElementById('btnNewAgent') as HTMLButtonElement | null;
+  if (newTask) newTask.hidden = route.view !== 'board';
+  if (newAgent) newAgent.hidden = route.view !== 'agents';
 }
 
 function navigate(url: string) {
@@ -314,6 +319,366 @@ document.addEventListener('click', (e) => {
   if (!href.startsWith('/')) return;
   e.preventDefault();
   navigate(href);
+});
+
+// Kanban drag + drop. Delegated at the board level so cards created later
+// by ops pick up behavior without re-wiring. Drop target reads its column's
+// data-status attribute; on drop we optimistically move the card DOM, then
+// fire issues::status_set so the backend state change republishes the
+// board snapshot (which reconciles). If the trigger fails, we restore the
+// card to its origin column.
+const boardEl = document.getElementById('board');
+if (boardEl) {
+  let draggingCard: HTMLElement | null = null;
+  let originColumn: HTMLElement | null = null;
+
+  boardEl.addEventListener('dragstart', (e) => {
+    const card = (e.target as HTMLElement | null)?.closest?.('.card') as HTMLElement | null;
+    if (!card || !card.dataset.issueId) return;
+    draggingCard = card;
+    originColumn = card.parentElement as HTMLElement | null;
+    card.classList.add('dragging');
+    e.dataTransfer?.setData('text/plain', card.dataset.issueId);
+    if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
+  });
+
+  boardEl.addEventListener('dragend', () => {
+    draggingCard?.classList.remove('dragging');
+    for (const c of boardEl.querySelectorAll('.column.dropTarget')) {
+      c.classList.remove('dropTarget');
+    }
+    draggingCard = null;
+    originColumn = null;
+  });
+
+  boardEl.addEventListener('dragover', (e) => {
+    const column = (e.target as HTMLElement | null)?.closest?.('.column') as HTMLElement | null;
+    if (!column) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+    for (const c of boardEl.querySelectorAll('.column.dropTarget')) {
+      if (c !== column) c.classList.remove('dropTarget');
+    }
+    column.classList.add('dropTarget');
+  });
+
+  boardEl.addEventListener('dragleave', (e) => {
+    const column = (e.target as HTMLElement | null)?.closest?.('.column') as HTMLElement | null;
+    if (!column) return;
+    const related = e.relatedTarget as Node | null;
+    if (related && column.contains(related)) return;
+    column.classList.remove('dropTarget');
+  });
+
+  boardEl.addEventListener('drop', (e) => {
+    const column = (e.target as HTMLElement | null)?.closest?.('.column') as HTMLElement | null;
+    if (!column || !draggingCard) return;
+    e.preventDefault();
+    column.classList.remove('dropTarget');
+    const issueId = draggingCard.dataset.issueId;
+    const nextStatus = column.dataset.status;
+    if (!issueId || !nextStatus) return;
+    if (originColumn && originColumn === column) return;
+
+    const body = column.querySelector('.columnBody');
+    if (body) body.appendChild(draggingCard);
+
+    const cardToRestore = draggingCard;
+    const restoreTarget = originColumn;
+
+    void iii
+      .trigger({
+        function_id: 'issues::status_set',
+        payload: { issue_id: issueId, status: nextStatus },
+      })
+      .catch((err) => {
+        const restoreBody = restoreTarget?.querySelector('.columnBody');
+        if (restoreBody && cardToRestore) restoreBody.appendChild(cardToRestore);
+        console.warn('[kanban] status_set failed', err);
+      });
+  });
+}
+
+type ToastLevel = 'info' | 'success' | 'warn' | 'error';
+const showToast = (text: string, level: ToastLevel = 'info', ms = 3500) =>
+  void PRIMS.toast({ text, level, ms });
+
+function describeError(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  if (/function_not_found|Function .* not found/i.test(raw)) {
+    return `${raw} → check \`iii worker list\`, the backing worker is down`;
+  }
+  return raw;
+}
+
+type FormField = { name: string; label: string; type?: 'text' | 'textarea'; placeholder?: string; required?: boolean };
+
+function openFormModal(opts: {
+  title: string;
+  body?: string;
+  fields: FormField[];
+  submitLabel: string;
+  onSubmit: (values: Record<string, string>) => Promise<void>;
+}) {
+  const layer = $('modalLayer');
+  const wrap = document.createElement('div');
+  wrap.className = 'modalWrap';
+
+  const form = document.createElement('form');
+  form.className = 'modal';
+  form.noValidate = true;
+
+  const titleEl = document.createElement('h3');
+  titleEl.className = 'modalTitle';
+  titleEl.textContent = opts.title;
+  form.appendChild(titleEl);
+
+  if (opts.body) {
+    const bodyEl = document.createElement('p');
+    bodyEl.className = 'modalBody';
+    bodyEl.textContent = opts.body;
+    form.appendChild(bodyEl);
+  }
+
+  for (const f of opts.fields) {
+    const fieldWrap = document.createElement('div');
+    fieldWrap.className = 'modalField';
+    const label = document.createElement('label');
+    label.className = 'modalLabel';
+    label.textContent = f.label;
+    fieldWrap.appendChild(label);
+    const ctl = f.type === 'textarea'
+      ? document.createElement('textarea')
+      : document.createElement('input');
+    ctl.className = f.type === 'textarea' ? 'modalTextarea' : 'modalInput';
+    ctl.name = f.name;
+    if (f.placeholder) ctl.placeholder = f.placeholder;
+    if (f.required) ctl.required = true;
+    if (f.type !== 'textarea') (ctl as HTMLInputElement).type = 'text';
+    fieldWrap.appendChild(ctl);
+    form.appendChild(fieldWrap);
+  }
+
+  const actions = document.createElement('div');
+  actions.className = 'modalActions';
+  const cancelBtn = document.createElement('button');
+  cancelBtn.type = 'button';
+  cancelBtn.className = 'btn cancelBtn';
+  cancelBtn.textContent = 'Cancel';
+  cancelBtn.onclick = () => wrap.remove();
+  actions.appendChild(cancelBtn);
+  const submitBtn = document.createElement('button');
+  submitBtn.type = 'submit';
+  submitBtn.className = 'btn accent submitBtn';
+  submitBtn.textContent = opts.submitLabel;
+  actions.appendChild(submitBtn);
+  form.appendChild(actions);
+
+  wrap.appendChild(form);
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const data = new FormData(form);
+    const values: Record<string, string> = {};
+    for (const f of opts.fields) values[f.name] = String(data.get(f.name) ?? '').trim();
+    const missing = opts.fields.find((f) => f.required && !values[f.name]);
+    if (missing) {
+      showToast(`${missing.label} is required`, 'warn');
+      return;
+    }
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Working…';
+    try {
+      await opts.onSubmit(values);
+      wrap.remove();
+    } catch (err) {
+      showToast(`Failed: ${describeError(err)}`, 'error', 5000);
+      submitBtn.disabled = false;
+      submitBtn.textContent = opts.submitLabel;
+    }
+  });
+  layer.appendChild(wrap);
+  const firstInput = form.querySelector('input, textarea') as HTMLElement | null;
+  firstInput?.focus();
+}
+
+type AgentRef = { id: string; name: string; provider?: string; runtime_id?: string };
+type RuntimeRef = { id: string; host: string; os: string; arch: string; status: string; clis_available?: string[] };
+
+async function stateList<T>(scope: string, prefix: string): Promise<T[]> {
+  const v = await iii.trigger({ function_id: 'state::list', payload: { scope, prefix } });
+  return Array.isArray(v) ? (v as T[]) : [];
+}
+
+function openAssignModal(issueId: string, issueTitle: string) {
+  const layer = $('modalLayer');
+  const wrap = document.createElement('div');
+  wrap.className = 'modalWrap';
+  wrap.innerHTML = `
+    <form class="modal" novalidate>
+      <h3 class="modalTitle">Assign task</h3>
+      <p class="modalBody"></p>
+      <div class="modalField">
+        <label class="modalLabel">Agent</label>
+        <select class="modalSelect" name="agent_id" required>
+          <option value="">loading…</option>
+        </select>
+      </div>
+      <div class="modalField">
+        <label class="modalLabel">Runtime</label>
+        <select class="modalSelect" name="runtime_id" required>
+          <option value="">loading…</option>
+        </select>
+      </div>
+      <div class="modalActions">
+        <button type="button" class="btn cancelBtn">Cancel</button>
+        <button type="submit" class="btn accent submitBtn">Hand over</button>
+      </div>
+    </form>`;
+  (wrap.querySelector('.modalBody') as HTMLElement).textContent = `"${issueTitle}"`;
+  const form = wrap.querySelector('form') as HTMLFormElement;
+  const agentSel = form.querySelector('select[name="agent_id"]') as HTMLSelectElement;
+  const runtimeSel = form.querySelector('select[name="runtime_id"]') as HTMLSelectElement;
+  const submitBtn = form.querySelector('.submitBtn') as HTMLButtonElement;
+  (form.querySelector('.cancelBtn') as HTMLButtonElement).onclick = () => wrap.remove();
+
+  layer.appendChild(wrap);
+
+  let loadedAgents: AgentRef[] = [];
+
+  void (async () => {
+    try {
+      const [agents, runtimes] = await Promise.all([
+        stateList<AgentRef>('agents', 'agent:'),
+        stateList<RuntimeRef>('runtimes', 'runtime:'),
+      ]);
+      loadedAgents = agents;
+      agentSel.innerHTML = '';
+      if (agents.length === 0) {
+        agentSel.innerHTML = '<option value="">no agents registered — register one first</option>';
+        agentSel.disabled = true;
+      } else {
+        for (const a of agents) {
+          const opt = document.createElement('option');
+          opt.value = a.id;
+          opt.textContent = `${a.name}${a.provider ? ` (${a.provider})` : ''} · ${a.id.slice(0, 8)}`;
+          agentSel.appendChild(opt);
+        }
+      }
+      runtimeSel.innerHTML = '';
+      const online = runtimes.filter((r) => r.status === 'online');
+      if (online.length === 0) {
+        runtimeSel.innerHTML = '<option value="">no online runtimes — start agent-daemon</option>';
+        runtimeSel.disabled = true;
+      } else {
+        for (const r of online) {
+          const opt = document.createElement('option');
+          opt.value = r.id;
+          const clis = r.clis_available?.length ? ` [${r.clis_available.join(',')}]` : '';
+          opt.textContent = `${r.host} · ${r.os}/${r.arch}${clis} · ${r.id.slice(0, 8)}`;
+          runtimeSel.appendChild(opt);
+        }
+      }
+    } catch (err) {
+      showToast(`Failed to load agents/runtimes: ${describeError(err)}`, 'error');
+    }
+  })();
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const data = new FormData(form);
+    const agent_id = String(data.get('agent_id') ?? '').trim();
+    const runtime_id = String(data.get('runtime_id') ?? '').trim();
+    if (!agent_id || !runtime_id) {
+      showToast('Pick an agent and a runtime', 'warn');
+      return;
+    }
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Handing over…';
+    try {
+      const res = (await iii.trigger({
+        function_id: 'issues::assign',
+        payload: { issue_id: issueId, agent_id, runtime_id },
+      })) as { ok?: boolean; error?: string; status?: string };
+      if (res?.ok === false) {
+        showToast(`Cannot assign: ${res.error ?? 'already claimed'}`, 'warn');
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Hand over';
+        return;
+      }
+      const agentName = loadedAgents.find((a) => a.id === agent_id)?.name ?? 'agent';
+      showToast(`Handed over to ${agentName}`, 'success');
+      wrap.remove();
+    } catch (err) {
+      showToast(`Hand-over failed: ${describeError(err)}`, 'error', 5000);
+      submitBtn.disabled = false;
+      submitBtn.textContent = 'Hand over';
+    }
+  });
+}
+
+// Intercept assign-link clicks before the generic anchor-routing handler picks them up.
+document.addEventListener('click', (e) => {
+  const target = (e.target as Element | null)?.closest?.('[data-action="assign"]') as HTMLElement | null;
+  if (!target) return;
+  e.preventDefault();
+  e.stopPropagation();
+  const issueId = target.dataset.issueId;
+  const issueTitle = target.dataset.issueTitle ?? '';
+  if (!issueId) return;
+  openAssignModal(issueId, issueTitle);
+}, true);
+
+document.getElementById('btnNewTask')?.addEventListener('click', () => {
+  openFormModal({
+    title: 'New task',
+    body: 'Files into the OPEN column. Any agent in this workspace can claim it.',
+    submitLabel: 'Create task',
+    fields: [
+      { name: 'title', label: 'Title', required: true, placeholder: 'Fix login redirect loop' },
+      { name: 'body', label: 'Details', type: 'textarea', placeholder: 'What should the agent do? Include links, repros, acceptance criteria.' },
+      { name: 'labels', label: 'Labels (comma-separated)', placeholder: 'bug, backend' },
+    ],
+    onSubmit: async (v) => {
+      const labels = v.labels ? v.labels.split(',').map((s) => s.trim()).filter(Boolean) : [];
+      await iii.trigger({
+        function_id: 'issues::create',
+        payload: {
+          workspace_id: 'default',
+          title: v.title,
+          body: v.body || '',
+          labels,
+          creator_id: 'user',
+        },
+      });
+      showToast(`Task filed: "${v.title}"`, 'success');
+    },
+  });
+});
+
+document.getElementById('btnNewAgent')?.addEventListener('click', () => {
+  openFormModal({
+    title: 'Register agent',
+    body: 'Register an LLM-backed agent. It will pick up issues assigned to this workspace.',
+    submitLabel: 'Register',
+    fields: [
+      { name: 'name', label: 'Name', required: true, placeholder: 'coder-claude' },
+      { name: 'provider', label: 'Provider', required: true, placeholder: 'anthropic | openai | openrouter | cli' },
+      { name: 'capabilities', label: 'Capabilities (comma-separated)', placeholder: 'code, review' },
+    ],
+    onSubmit: async (v) => {
+      const capabilities = v.capabilities ? v.capabilities.split(',').map((s) => s.trim()).filter(Boolean) : [];
+      await iii.trigger({
+        function_id: 'agent::register',
+        payload: {
+          workspace_id: 'default',
+          name: v.name,
+          provider: v.provider,
+          capabilities,
+        },
+      });
+      showToast(`Agent registered: ${v.name}`, 'success');
+    },
+  });
 });
 
 (async () => {
