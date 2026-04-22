@@ -37,6 +37,10 @@ function now(): number {
 const locks = new Map<string, Promise<unknown>>();
 async function withBudgetLock<T>(id: string, fn: () => Promise<T>): Promise<T> {
   const prev = locks.get(id) ?? Promise.resolve();
+  // prev.then(fn, fn) — fn runs after prev whether prev fulfilled or
+  // rejected. A failed earlier op must not jam the queue for this
+  // budget_id; the prior rejection is intentionally swallowed here (the
+  // original caller already received the error from its own await).
   const task = prev.then(fn, fn);
   locks.set(id, task);
   try {
@@ -45,6 +49,15 @@ async function withBudgetLock<T>(id: string, fn: () => Promise<T>): Promise<T> {
     if (locks.get(id) === task) locks.delete(id);
   }
 }
+
+const VALID_PERIODS: ReadonlySet<Period> = new Set(['day', 'week', 'month']);
+function assertPeriod(p: unknown): Period {
+  if (typeof p === 'string' && VALID_PERIODS.has(p as Period)) return p as Period;
+  throw new Error(`invalid period: ${JSON.stringify(p)} (expected 'day' | 'week' | 'month')`);
+}
+
+// Rank lets us compare window granularity: day < week < month.
+const PERIOD_RANK: Record<Period, number> = { day: 0, week: 1, month: 2 };
 
 function requireBudget(b: Budget | null, id: string): Budget {
   if (!b) throw new Error(`budget not found: ${id}`);
@@ -119,15 +132,16 @@ iii.registerFunction(
     if (!Number.isFinite(input.ceiling_usd) || input.ceiling_usd <= 0) {
       throw new Error('ceiling_usd must be > 0');
     }
+    const period = assertPeriod(input.period);
     const ts = now();
-    const start = periodStart(input.period, ts);
+    const start = periodStart(period, ts);
     const budget: Budget = {
       id: crypto.randomUUID(),
       workspace_id: input.workspace_id,
       agent_id: input.agent_id,
       name: input.name,
       ceiling_usd: input.ceiling_usd,
-      period: input.period,
+      period,
       spent_usd: 0,
       period_start_at: start,
       period_resets_at: nextPeriodStart(input.period, start),
@@ -159,26 +173,35 @@ iii.registerFunction('budget::get', async (input: { budget_id: string }) => {
   return { budget: requireBudget(await store.loadBudget(input.budget_id), input.budget_id) };
 });
 
+// Fields the generic budget::update is allowed to touch. Everything else
+// (alerts, exemptions, spent, period boundaries, immutable ids) must be
+// mutated through dedicated endpoints that carry their own validation.
+const UPDATABLE_FIELDS = ['name', 'ceiling_usd', 'period', 'enforced', 'paused'] as const;
+type UpdatableField = (typeof UPDATABLE_FIELDS)[number];
+type Patch = Partial<Pick<Budget, UpdatableField>>;
+
 iii.registerFunction(
   'budget::update',
-  async (input: { budget_id: string; patch: Partial<Budget> }) =>
+  async (input: { budget_id: string; patch: Record<string, unknown> }) =>
     withBudgetLock(input.budget_id, async () => {
       const ts = now();
       const current = requireBudget(await store.loadBudget(input.budget_id), input.budget_id);
-      // Block mutation of immutable fields; spent/period windows are managed
-      // internally via record/reset/rollover.
-      const {
-        id: _id,
-        created_at: _created,
-        spent_usd: _spent,
-        period_start_at: _ps,
-        period_resets_at: _pr,
-        ...mutable
-      } = input.patch as Partial<Budget>;
+      // Whitelist: silently drop any field not in UPDATABLE_FIELDS. alerts,
+      // exemptions, spent_usd, period boundaries, and immutable ids must go
+      // through their dedicated endpoints (alert_set, exempt, record, reset).
+      const mutable: Patch = {};
+      for (const k of UPDATABLE_FIELDS) {
+        if (k in input.patch) {
+          (mutable as Record<string, unknown>)[k] = input.patch[k];
+        }
+      }
       if (mutable.ceiling_usd !== undefined) {
         if (!Number.isFinite(mutable.ceiling_usd) || mutable.ceiling_usd <= 0) {
           throw new Error('ceiling_usd must be a positive finite number');
         }
+      }
+      if (mutable.period !== undefined) {
+        mutable.period = assertPeriod(mutable.period);
       }
       // If period kind is changing, first roll the old period forward so any
       // elapsed zero-spend boundaries are archived (otherwise a period switch
@@ -272,9 +295,6 @@ iii.registerFunction(
 
     b = { ...b, spent_usd: b.spent_usd + input.cost_usd, updated_at: ts };
 
-    // Fire-and-forget meter bump; never block record on meter availability.
-    bumpMeter(b.id, periodKey(b.period, b.period_start_at), input.cost_usd);
-
     // Alerts: fire once per period when the spent ratio crosses the threshold.
     const ratio = b.spent_usd / b.ceiling_usd;
     const pendingAlerts: Alert[] = [];
@@ -289,17 +309,24 @@ iii.registerFunction(
 
     await store.saveBudget(b);
 
+    // Only bump the meter after the budget save succeeds, otherwise a save
+    // failure would leave the meter over-counted vs the actual spent_usd.
+    bumpMeter(b.id, periodKey(b.period, b.period_start_at), input.cost_usd);
+
     for (const a of pendingAlerts) {
       iii
         .trigger({
           function_id: a.callback_function_id,
+          // Spread caller payload first, then overlay system fields so they
+          // always win. Otherwise a malicious or buggy callback_payload could
+          // forge alert_id / budget_id / threshold_pct in its own callback.
           payload: {
+            ...(a.callback_payload ?? {}),
             alert_id: a.alert_id,
             budget_id: b.id,
             spent_usd: b.spent_usd,
             ceiling_usd: b.ceiling_usd,
             threshold_pct: a.threshold_pct,
-            ...(a.callback_payload ?? {}),
           },
         })
         .catch((err) => {
@@ -318,7 +345,10 @@ iii.registerFunction(
 iii.registerFunction('budget::reset', async (input: { budget_id: string }) =>
   withBudgetLock(input.budget_id, async () => {
     const ts = now();
-    const b = requireBudget(await store.loadBudget(input.budget_id), input.budget_id);
+    const loaded = requireBudget(await store.loadBudget(input.budget_id), input.budget_id);
+    // Roll forward first so any skipped zero-spend periods are archived under
+    // their own boundaries before we archive the current window.
+    const b = await maybeRollOver(loaded, ts);
     const previous = b.spent_usd;
 
     // Use a reset-specific key so the archived entry doesn't collide with
@@ -387,6 +417,17 @@ iii.registerFunction(
 
       const logs = await store.listSpendLogs(b.id);
       const window = input.window ?? 'all';
+
+      // Reject windows narrower than the budget's own period — we only store
+      // spend buckets at the budget's granularity, so asking for a 'day' window
+      // on a monthly budget would silently drop the current period (its start
+      // is earlier than today) and return misleading zero-spend.
+      if (window !== 'all' && PERIOD_RANK[window] < PERIOD_RANK[b.period]) {
+        throw new Error(
+          `window '${window}' is narrower than budget period '${b.period}'; ` +
+            `cannot compute a sub-period window from coarse buckets`,
+        );
+      }
 
       let cutoff = 0;
       if (window !== 'all') {
