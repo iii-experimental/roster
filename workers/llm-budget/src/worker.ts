@@ -321,7 +321,12 @@ iii.registerFunction('budget::reset', async (input: { budget_id: string }) =>
     const b = requireBudget(await store.loadBudget(input.budget_id), input.budget_id);
     const previous = b.spent_usd;
 
-    await store.saveSpendLog(b.id, b.period_start_at, {
+    // Use a reset-specific key so the archived entry doesn't collide with
+    // the live period after re-anchor. periodStart() returns the same boundary
+    // when ts falls inside the same period, so spend_log:<id>:<period_start>
+    // would map to both the reset archive AND the live budget's period; a
+    // later rollover would overwrite the reset entry.
+    await store.saveResetLog(b.id, b.period_start_at, ts, crypto.randomUUID(), {
       budget_id: b.id,
       period_start: b.period_start_at,
       period_end: ts,
@@ -388,7 +393,13 @@ iii.registerFunction(
         cutoff = periodStart(window, ts);
       }
 
-      const relevant = logs.filter((l) => l.period_start >= cutoff);
+      // Exclude any archived entries for the current period_start_at — the
+      // live budget contributes that period below. Without this, a reset
+      // that archived at the same period boundary would double-count, and
+      // a rollover that later overwrote the archive would data-loss.
+      const relevant = logs.filter(
+        (l) => l.period_start >= cutoff && l.period_start !== b.period_start_at,
+      );
       const byPeriod: Array<{ period: number; spent: number }> = relevant
         .map((l) => ({ period: l.period_start, spent: l.spent_usd }))
         .sort((a, b2) => a.period - b2.period);

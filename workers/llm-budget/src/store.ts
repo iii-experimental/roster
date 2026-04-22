@@ -45,6 +45,12 @@ export type SpendLogEntry = {
 export const budgetKey = (id: string) => `budget:${id}`;
 export const spendLogKey = (id: string, periodStart: number) =>
   `spend_log:${id}:${periodStart}`;
+// Reset archives can collide with the post-reset live period when the reset
+// happens mid-period (budget::reset re-anchors to periodStart(period, ts),
+// which equals the archived period_start_at). Append a unique suffix so the
+// reset entry survives and the live period can still archive at rollover.
+export const resetLogKey = (id: string, periodStart: number, ts: number, suffix: string) =>
+  `spend_log:${id}:${periodStart}:reset-${ts}-${suffix}`;
 
 type Trigger = (arg: { function_id: string; payload: unknown }) => Promise<unknown>;
 
@@ -79,6 +85,8 @@ export function makeStore(trigger: Trigger) {
     },
     saveSpendLog: (id: string, periodStartMs: number, entry: SpendLogEntry) =>
       set(spendLogKey(id, periodStartMs), entry),
+    saveResetLog: (id: string, periodStartMs: number, ts: number, suffix: string, entry: SpendLogEntry) =>
+      set(resetLogKey(id, periodStartMs, ts, suffix), entry),
     listSpendLogs: async (budgetId: string): Promise<SpendLogEntry[]> => {
       const all = await list<SpendLogEntry>(`spend_log:${budgetId}:`);
       return all.filter(
