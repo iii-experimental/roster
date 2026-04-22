@@ -197,6 +197,14 @@ iii.registerFunction(`${PREFIX}::ui::apply`, async (event: StateEvent | Snapshot
   if (!snap || !Array.isArray(snap.ops)) return { ok: true, applied: 0 };
   const scopeKey = event && typeof event === 'object' && 'key' in event
     ? (event.key ?? '') : '';
+  // Engine subscriptions from previous views stay registered, so their
+  // snapshots keep arriving after the user navigates away. Apply only ops
+  // that target the currently active scope key — otherwise a stale
+  // /runs/:id snapshot would clobber the board's shared DOM elements
+  // (viewTitle, viewStats, runTurns).
+  if (scopeKey && currentScope && scopeKey !== currentScope.key) {
+    return { ok: true, applied: 0, skipped_inactive: true };
+  }
   const gen = typeof snap.generation === 'number' ? snap.generation : 0;
   const last = appliedGenerations.get(scopeKey) ?? -1;
   if (gen <= last) return { ok: true, applied: 0, skipped_stale: true };
