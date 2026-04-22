@@ -10,7 +10,7 @@ export type Mention = {
 // One combined regex with named groups. Alternation runs left-to-right per
 // position, so spans never overlap. `g` so matchAll yields every hit.
 const MENTION_RE =
-  /@agent:(?<agent>[A-Za-z0-9_-]{1,64})|@user:(?<user>[A-Za-z0-9_-]{1,64})|@issue#(?<issue>\d+)|@run#(?<run>[A-Za-z0-9_-]{1,64})/g;
+  /@agent:(?<agent>[A-Za-z0-9_-]{1,64})|@user:(?<user>[A-Za-z0-9_-]{1,64})|@issue#(?<issue>[A-Za-z0-9_-]{1,64})|@run#(?<run>[A-Za-z0-9_-]{1,64})/g;
 
 // Group names double as MentionType values — one lookup replaces a 4-way if/else.
 const GROUP_TYPES: readonly MentionType[] = ['agent', 'user', 'issue', 'run'];
