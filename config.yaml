@@ -155,7 +155,5 @@ workers:
   - name: mention
     worker_path: ./workers/mention
 
-  # autopilot intentionally disabled — iii#1524 tokio panic on libkrun boot.
-  # Re-enable once upstream lands.
-  # - name: autopilot
-  #   worker_path: ./workers/autopilot
+  - name: autopilot
+    worker_path: ./workers/autopilot
