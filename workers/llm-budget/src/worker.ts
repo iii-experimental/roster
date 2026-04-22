@@ -56,9 +56,6 @@ function assertPeriod(p: unknown): Period {
   throw new Error(`invalid period: ${JSON.stringify(p)} (expected 'day' | 'week' | 'month')`);
 }
 
-// Rank lets us compare window granularity: day < week < month.
-const PERIOD_RANK: Record<Period, number> = { day: 0, week: 1, month: 2 };
-
 function requireBudget(b: Budget | null, id: string): Budget {
   if (!b) throw new Error(`budget not found: ${id}`);
   return b;
@@ -196,12 +193,20 @@ iii.registerFunction(
         }
       }
       if (mutable.ceiling_usd !== undefined) {
-        if (!Number.isFinite(mutable.ceiling_usd) || mutable.ceiling_usd <= 0) {
+        if (typeof mutable.ceiling_usd !== 'number' || !Number.isFinite(mutable.ceiling_usd) || mutable.ceiling_usd <= 0) {
           throw new Error('ceiling_usd must be a positive finite number');
         }
       }
       if (mutable.period !== undefined) {
         mutable.period = assertPeriod(mutable.period);
+      }
+      // Strict boolean check — don't accept truthy non-booleans like 1, "yes",
+      // or {} because those would silently change semantics.
+      if (mutable.enforced !== undefined && typeof mutable.enforced !== 'boolean') {
+        throw new Error(`enforced must be a boolean (got ${typeof mutable.enforced})`);
+      }
+      if (mutable.paused !== undefined && typeof mutable.paused !== 'boolean') {
+        throw new Error(`paused must be a boolean (got ${typeof mutable.paused})`);
       }
       // If period kind is changing, first roll the old period forward so any
       // elapsed zero-spend boundaries are archived (otherwise a period switch
@@ -351,19 +356,6 @@ iii.registerFunction('budget::reset', async (input: { budget_id: string }) =>
     const b = await maybeRollOver(loaded, ts);
     const previous = b.spent_usd;
 
-    // Use a reset-specific key so the archived entry doesn't collide with
-    // the live period after re-anchor. periodStart() returns the same boundary
-    // when ts falls inside the same period, so spend_log:<id>:<period_start>
-    // would map to both the reset archive AND the live budget's period; a
-    // later rollover would overwrite the reset entry.
-    await store.saveResetLog(b.id, b.period_start_at, ts, crypto.randomUUID(), {
-      budget_id: b.id,
-      period_start: b.period_start_at,
-      period_end: ts,
-      spent_usd: previous,
-      records_count: 0,
-    });
-
     const start = periodStart(b.period, ts);
     const reset: Budget = {
       ...b,
@@ -374,7 +366,33 @@ iii.registerFunction('budget::reset', async (input: { budget_id: string }) =>
       // Allow alerts to re-fire in the new period.
       alerts: b.alerts.map((a) => ({ ...a, last_fired_period_start: undefined })),
     };
+    // Save the budget first. If it fails, no orphan reset log exists and the
+    // caller can retry cleanly. Engine has no cross-key transactions yet, so
+    // full atomicity isn't possible — this ordering prefers "no history"
+    // over "phantom history", which is the safer failure mode.
     await store.saveBudget(reset);
+    // Reset-specific key so the archive doesn't collide with the live period
+    // after re-anchor (periodStart() returns the same boundary when ts falls
+    // inside the same period, so a plain spend_log:<id>:<period_start> would
+    // map to both the archive AND the live budget's period; a later rollover
+    // would overwrite the reset entry).
+    try {
+      await store.saveResetLog(b.id, b.period_start_at, ts, crypto.randomUUID(), {
+        budget_id: b.id,
+        period_start: b.period_start_at,
+        period_end: ts,
+        spent_usd: previous,
+        records_count: 0,
+      });
+    } catch (err) {
+      log.error('reset archive save failed after budget reset committed', {
+        budget_id: b.id,
+        previous_spent_usd: previous,
+        reason: String(err),
+      });
+      // Don't rethrow — the budget is already reset, rethrowing would mislead
+      // the caller into thinking the reset itself failed.
+    }
     return { budget_id: b.id, previous_spent_usd: previous };
   }),
 );
@@ -388,6 +406,9 @@ iii.registerFunction(
     callback_payload?: Record<string, unknown>;
   }) =>
     withBudgetLock(input.budget_id, async () => {
+      if (typeof input.threshold_pct !== 'number' || !Number.isFinite(input.threshold_pct)) {
+        throw new Error('threshold_pct must be a finite number');
+      }
       if (input.threshold_pct <= 0 || input.threshold_pct > 1) {
         throw new Error('threshold_pct must be in (0, 1]');
       }
@@ -418,14 +439,17 @@ iii.registerFunction(
       const logs = await store.listSpendLogs(b.id);
       const window = input.window ?? 'all';
 
-      // Reject windows narrower than the budget's own period — we only store
-      // spend buckets at the budget's granularity, so asking for a 'day' window
-      // on a monthly budget would silently drop the current period (its start
-      // is earlier than today) and return misleading zero-spend.
-      if (window !== 'all' && PERIOD_RANK[window] < PERIOD_RANK[b.period]) {
+      // Window must nest cleanly inside the budget's period boundaries.
+      // - Narrower than period: we have no sub-period buckets, filtering
+      //   against a tighter cutoff silently drops real spend.
+      // - Wider than period with misaligned boundaries: a weekly budget
+      //   queried with a monthly window would count weeks that straddle the
+      //   month boundary as either fully in or fully out. Only same-
+      //   granularity (or 'all') is safely aggregatable.
+      if (window !== 'all' && window !== b.period) {
         throw new Error(
-          `window '${window}' is narrower than budget period '${b.period}'; ` +
-            `cannot compute a sub-period window from coarse buckets`,
+          `window '${window}' does not align with budget period '${b.period}'. ` +
+            `Use window: '${b.period}' or 'all'.`,
         );
       }
 
@@ -490,6 +514,9 @@ iii.registerFunction(
   'budget::enforce',
   async (input: { budget_id: string; enforced: boolean }) =>
     withBudgetLock(input.budget_id, async () => {
+      if (typeof input.enforced !== 'boolean') {
+        throw new Error(`enforced must be a boolean (got ${typeof input.enforced})`);
+      }
       const b = requireBudget(await store.loadBudget(input.budget_id), input.budget_id);
       const next: Budget = { ...b, enforced: input.enforced, updated_at: now() };
       await store.saveBudget(next);
@@ -527,6 +554,9 @@ iii.registerFunction(
   'budget::pause',
   async (input: { budget_id: string; paused: boolean }) =>
     withBudgetLock(input.budget_id, async () => {
+      if (typeof input.paused !== 'boolean') {
+        throw new Error(`paused must be a boolean (got ${typeof input.paused})`);
+      }
       const b = requireBudget(await store.loadBudget(input.budget_id), input.budget_id);
       const next: Budget = { ...b, paused: input.paused, updated_at: now() };
       await store.saveBudget(next);
