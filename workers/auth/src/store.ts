@@ -1,0 +1,66 @@
+import type { Role } from './roles.js';
+
+export const SCOPE = 'auth';
+
+export type Workspace = {
+  id: string;
+  name: string;
+  owner_id: string;
+  created_at: number;
+};
+
+export type ApiKey = {
+  id: string;
+  workspace_id: string;
+  role: Role;
+  hash: string;
+  description?: string;
+  created_by?: string;
+  created_at: number;
+  last_used_at?: number;
+  revoked_at?: number;
+};
+
+export type RoleGrant = {
+  workspace_id: string;
+  user_id: string;
+  role: Role;
+  granted_at: number;
+};
+
+export const workspaceKey = (id: string) => `workspace:${id}`;
+export const keyKey = (id: string) => `key:${id}`;
+// Lookup keyed on the full hmac hash, not a 12-char prefix, so two keys
+// that share a prefix can't overwrite each other's lookup entry.
+export const keyLookupKey = (fullHash: string) => `key_lookup:${fullHash}`;
+export const roleKey = (workspaceId: string, userId: string) =>
+  `role:${workspaceId}:${userId}`;
+
+export type Trigger = (args: {
+  function_id: string;
+  payload: unknown;
+}) => Promise<unknown>;
+
+export function makeStore(trigger: Trigger) {
+  const set = (key: string, value: unknown) =>
+    trigger({ function_id: 'state::set', payload: { scope: SCOPE, key, value } });
+
+  const get = async <T>(key: string): Promise<T | null> =>
+    ((await trigger({ function_id: 'state::get', payload: { scope: SCOPE, key } })) as
+      | T
+      | null) ?? null;
+
+  const list = async <T>(prefix?: string): Promise<T[]> => {
+    const payload: Record<string, unknown> = { scope: SCOPE };
+    if (prefix) payload.prefix = prefix;
+    const v = await trigger({ function_id: 'state::list', payload });
+    return Array.isArray(v) ? (v as T[]) : [];
+  };
+
+  const del = (key: string) =>
+    trigger({ function_id: 'state::delete', payload: { scope: SCOPE, key } });
+
+  return { set, get, list, del };
+}
+
+export type Store = ReturnType<typeof makeStore>;
