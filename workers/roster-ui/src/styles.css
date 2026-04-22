@@ -68,14 +68,32 @@ body {
 #connection .dot.ok { background: var(--success); box-shadow: 0 0 0 2px rgba(34,197,94,0.15); }
 
 #main { padding: 22px 28px; max-width: 1400px; width: 100%; }
-#viewHeader { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 18px; }
+#viewHeader { display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px; gap: 12px; }
 #viewHeader h1 { font-size: 18px; font-weight: 600; }
+.headerRight { display: flex; align-items: center; gap: 12px; }
 #viewStats { color: var(--muted); font-size: 12px; }
+.headerRight .btn { font-size: 12px; padding: 6px 10px; }
+.modalInput, .modalTextarea, .modalSelect {
+  background: var(--background);
+  color: var(--foreground);
+  border: 1px solid var(--border);
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  width: 100%;
+}
+.modalTextarea { min-height: 100px; resize: vertical; font-family: var(--font-sans); }
+.modalLabel { font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
+.modalField { display: flex; flex-direction: column; gap: 6px; }
+.modalInput:focus, .modalTextarea:focus, .modalSelect:focus { outline: none; border-color: var(--accent); }
 
 .view { display: none; }
 .view.active { display: block; }
 
-#board {
+/* .view rules win over bare #id so inactive views stay hidden.
+ * Keep layout styles scoped to .active to avoid specificity override. */
+#board.active {
   display: grid;
   grid-template-columns: repeat(5, minmax(240px, 1fr));
   gap: 14px;
@@ -106,9 +124,31 @@ body {
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   padding: 10px 12px;
-  cursor: pointer;
+  cursor: grab;
+  user-select: none;
+  transition: border-color 0.12s ease, transform 0.12s ease, box-shadow 0.12s ease;
 }
-.card:hover { border-color: var(--accent); }
+.card:hover { border-color: var(--accent); transform: translateY(-1px); box-shadow: 0 2px 12px rgba(243, 247, 36, 0.05); }
+.card:active { cursor: grabbing; }
+.card.dragging { opacity: 0.4; cursor: grabbing; }
+
+.column { transition: background 0.12s ease, border-color 0.12s ease; }
+.column.dropTarget {
+  background: var(--accent-subtle);
+  border-color: var(--accent);
+}
+.column.dropTarget .columnBody::after {
+  content: 'drop to move';
+  display: block;
+  text-align: center;
+  font-size: 11px;
+  color: var(--accent);
+  border: 1px dashed var(--accent);
+  border-radius: var(--radius-sm);
+  padding: 8px;
+  margin-top: 4px;
+  pointer-events: none;
+}
 .card .cardTitle { font-size: 13px; font-weight: 500; margin-bottom: 4px; }
 .card .cardMeta { font-family: var(--font-mono); font-size: 11px; color: var(--muted); display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
 .card .cardMeta .pill { padding: 1px 6px; border: 1px solid var(--border); border-radius: var(--radius-sm); }
@@ -174,5 +214,99 @@ body {
 .btn:hover { border-color: var(--accent); }
 .btn.accent { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
 .btn.accent:hover { background: var(--accent-hover); }
+
+.emptyState {
+  padding: 40px 20px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 13px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-md);
+}
+
+.uppercase-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 6px;
+  margin-top: 10px;
+}
+.subtle { color: var(--muted); }
+
+.agentCard {
+  padding: 14px 16px;
+  gap: 10px;
+  display: flex;
+  flex-direction: column;
+}
+.agentHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+}
+.livePill {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--info);
+  padding: 2px 8px;
+  border: 1px solid var(--info);
+  border-radius: 999px;
+  animation: pulse 1.4s ease-in-out infinite;
+}
+.agentActivity {
+  background: var(--accent-subtle);
+  border-left: 2px solid var(--accent);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.activityLine { font-size: 13px; font-weight: 500; }
+.activitySnippet {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--secondary);
+  background: var(--background);
+  padding: 8px;
+  border-radius: var(--radius-sm);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.runHistory { display: flex; flex-direction: column; gap: 4px; }
+.runRow {
+  display: grid;
+  grid-template-columns: 1fr auto auto auto;
+  gap: 10px;
+  align-items: center;
+  font-size: 12px;
+  padding: 6px 8px;
+  border-top: 1px solid var(--border-subtle);
+}
+.runRowTitle { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agentTotals {
+  display: flex;
+  gap: 16px;
+  font-size: 11px;
+  color: var(--muted);
+  padding-top: 8px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.15); }
+}
+
+#agents.active, #runtimes.active, #settings.active { display: flex; flex-direction: column; gap: 10px; }
+#agents .card, #runtimes .card, #settings .card { cursor: default; }
+#agents .card:hover, #runtimes .card:hover, #settings .card:hover {
+  transform: none;
+  box-shadow: none;
+  border-color: var(--border);
+}
 
 @keyframes slide-in { from { transform: translateX(20px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }

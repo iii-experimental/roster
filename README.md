@@ -1,12 +1,20 @@
 # roster
 
-Agent platform on [iii](https://iii.dev). Every worker = hardware-isolated libkrun microVM. No REST, no HTTP, no framework. The browser is a worker too — a dumb DOM renderer that backend workers drive by publishing ops lists into iii state.
+Agent platform on [iii](https://iii.dev). Every worker runs in its own libkrun microVM. No REST, no HTTP, no framework. The browser is a worker too — a thin DOM renderer the backend drives by publishing ops into iii state.
 
-**Status:** experimental, first repo in `iii-experimental/`. Pins iii v0.11.2.
+**Status:** experimental, first repo in `iii-experimental/`. Pins iii v0.11.3.
 
-## What it does
+## What you do with it
 
-Assign an issue to an agent. Agent claims it, runs inside its own microVM, calls `router::decide` to pick a model, streams the answer back, posts a diff / comment, and flips the issue to review. All state lives in iii. All UI comes from reactive state snapshots. Reusable pieces (llm-router, shell, sandbox, memory, etc.) live in `iii-hq/workers` so another project installs them with `iii worker add`.
+A kanban board for AI agents. File a task, hand it to an agent, watch it run.
+
+1. `+ New task` → task lands in **OPEN**
+2. `+ Register agent` → pick provider (anthropic / openai / openrouter / cli)
+3. `assign →` on the card → pick agent + runtime → task flips to **CLAIMED**
+4. `agent-daemon` on that runtime picks it up → **RUNNING** → LLM streams turns into the run view
+5. Terminal status flips the card to **REVIEW** (completed) or **BLOCKED** (failed)
+
+You can drag cards between columns to force a status. Click a card's `view run` link for the full reasoning trace with per-turn tokens + cost.
 
 ## Why microVMs
 
@@ -14,7 +22,7 @@ Assign an issue to an agent. Agent claims it, runs inside its own microVM, calls
 
 ## What's in the box
 
-21 workers wired today.
+21 workers wired today. Browser UI ships the full handover loop — **+ New task**, **+ Register agent**, per-card **assign →** / **reassign**, drag-between-columns, live run view with per-turn tokens + cost.
 
 | Worker | Language | Role |
 |---|---|---|
@@ -66,7 +74,7 @@ Add a new provider = one new narrow worker with `provider-<name>::complete({mode
 ## Quickstart
 
 ```bash
-# 1. install iii (>= 0.11.2)
+# 1. install iii (>= 0.11.3)
 curl -fsSL https://iii.dev/install | bash
 iii update                     # if you already have it
 
@@ -75,29 +83,48 @@ git clone https://github.com/iii-experimental/roster
 cd roster
 npm install --workspaces       # installs deps for each worker
 
-# 3. copy provider env templates (fill only what you'll exercise)
+# 3. pick at least one provider and set its key
+#    skip this if you only want to try the inline `echo/` model
 cp workers/provider-openrouter/.env.example workers/provider-openrouter/.env
-cp workers/provider-anthropic/.env.example  workers/provider-anthropic/.env
-cp workers/provider-openai/.env.example     workers/provider-openai/.env
 $EDITOR workers/provider-openrouter/.env     # set OPENROUTER_API_KEY
 
-# 4. boot the engine (reads ./config.yaml, starts every worker as a local-path sandbox)
+# 4. set the auth worker secret (one-time)
+echo "AUTH_HMAC_SECRET=$(openssl rand -hex 32)" > workers/auth/.env
+
+# 5. boot the engine — starts every worker as a local-path microVM
 iii
 ```
 
-Open `http://localhost:5173` in a second tab for the board. First boot takes 2–3 minutes per worker (npm install + libkrun VM warm-up); subsequent boots are ~5 seconds.
+**First boot:** 2–3 min per worker (libkrun VM setup + `npm install` inside each VM). Subsequent boots: ~5 s.
 
-See [`docs/providers.md`](./docs/providers.md) for model-id prefixes, env vars per provider, and how to add a new provider worker.
+Once `iii worker list` shows everything running, open:
 
-### Smoke test
+| URL | What |
+|-----|------|
+| `http://localhost:5173` | roster board (vite serves the UI worker) |
+| `http://localhost:3113` | iii developer console (workers, functions, traces, state) |
 
-One command exercises the whole pipe (register agent → policy → issue → assign → status flip) using the inline `echo/` provider. No API key needed.
+### Hand a task to an agent
+
+From the board at `http://localhost:5173`:
+
+1. Click **+ New task** (top-right). Fill title + details + labels → **Create task**. Card lands in **OPEN**.
+2. Navigate to **Agents**. Click **+ Register agent**. Fill name + provider + capabilities → **Register**.
+3. Back on the board, click **assign →** on the card you filed. Pick your agent + the runtime that's online → **Hand over**.
+4. Card moves to **CLAIMED**. `agent-daemon` on that runtime picks it up, flips to **RUNNING**, and starts streaming turns.
+5. Click **view run** on a **RUNNING** card to watch the reasoning trace live.
+
+### Smoke test (no API key)
+
+One command runs the whole pipe end-to-end using the inline `echo/` provider.
 
 ```bash
 npm run smoke
 ```
 
-If you prefer the raw `iii trigger` calls, see `scripts/smoke.sh`.
+If you prefer raw `iii trigger` calls, see `scripts/smoke.sh`.
+
+See [`docs/providers.md`](./docs/providers.md) for model-id prefixes, env vars per provider, and how to add a new provider worker.
 
 ### Real LLM run via OpenRouter
 
@@ -187,10 +214,10 @@ Source edits to TypeScript workers hot-reload via tsx watch inside the microVM. 
 
 Pinned SDKs — exact, no ranges:
 
-- Rust: `iii-sdk = "0.11.2"`
-- Node backend: `"iii-sdk": "0.11.2"`
-- Node browser: `"iii-browser-sdk": "0.11.2"`
-- Python: `iii-sdk==0.11.2`
+- Rust: `iii-sdk = "0.11.3"`
+- Node backend: `"iii-sdk": "0.11.3"`
+- Node browser: `"iii-browser-sdk": "0.11.3"`
+- Python: `iii-sdk==0.11.3`
 
 ## Secrets
 
@@ -207,8 +234,9 @@ Worker entry point reads them through `dotenv/config`. `iii.worker.yaml` does no
 ## Known limitations
 
 - `iii-worker-manager` RBAC port (49135) is not wired into the demo config; current setup connects the browser straight to 49134. Add an `iii-worker-manager` entry before exposing publicly.
-- `sandbox` v1 is a host-scoped directory per sandbox. Nested-microVM spawn (full per-run isolation) waits for the engine to expose worker management (`workers::add`, `workers::exec`, `workers::remove`) as iii functions. The `iii worker exec` CLI shipped in iii#1514 handles the runtime side but isn't reachable from inside a worker without an engine-level function.
-- `llm-router` needs an upstream fix (state envelope shape changed in v0.11.2). Tracked; swap to the registry version once released.
+- `sandbox` v1 is a host-scoped directory per sandbox. Nested-microVM spawn (full per-run isolation) waits for the planned engine-level sandbox worker that exposes `workers::add` / `workers::exec` / `workers::remove` as iii functions.
+- `autopilot` worker is commented out in `config.yaml` pending stability work on auto-claim loops.
+- The `roster-ui` worker in `config.yaml` expects port 5173; run vite on the host (`cd workers/roster-ui && npx vite --port 5173`) during dev since the worker's own VM will clash if the host port is already bound.
 
 ## Design
 

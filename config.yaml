@@ -38,6 +38,55 @@ workers:
           store_method: file_based
           file_path: ./data/queue_store
 
+  # WebSocket stream on :3112 is what iii-console's /ws/streams proxy talks to.
+  # Without this, the console banner shows "Connection blocked by CORS" even
+  # though the HTTP API at :3111 is reachable — the WS upgrade just 404s.
+  - name: iii-stream
+    config:
+      port: 3112
+      host: 127.0.0.1
+      adapter:
+        name: kv
+        config:
+          store_method: file_based
+          file_path: ./data/stream_store
+
+  - name: iii-pubsub
+    config:
+      adapter:
+        name: local
+
+  # Required for cron triggers (runtimes::gc, etc). Without it the engine logs
+  # "cron trigger failed" on every worker that registers one.
+  - name: iii-cron
+    config:
+      adapter:
+        name: kv
+        config:
+          store_method: file_based
+          file_path: ./data/cron_store
+
+  # HTTP API on :3111 so iii-console (which runs at :3113) can reach the
+  # engine via its default REST port. CORS allows the console origin and
+  # common dev origins so the browser doesn't block the console SPA.
+  - name: iii-http
+    config:
+      port: 3111
+      host: 127.0.0.1
+      cors:
+        allowed_origins:
+          - http://localhost:3113
+          - http://127.0.0.1:3113
+          - http://localhost:5173
+          - http://127.0.0.1:5173
+        allowed_methods:
+          - GET
+          - POST
+          - PUT
+          - DELETE
+          - OPTIONS
+          - PATCH
+
   - name: roster-ui
     worker_path: ./workers/roster-ui
 
@@ -84,6 +133,7 @@ workers:
   # iii-hq/workers. During local development before then, add a worker_path
   # line here pointing to your local checkout. See docs/providers.md.
   - name: llm-router
+    worker_path: /tmp/workers-pr32/llm-router
 
   # Phase-2 narrow workers (graduate to iii-hq/workers once stable).
   - name: meter
@@ -104,5 +154,7 @@ workers:
   - name: mention
     worker_path: ./workers/mention
 
-  - name: autopilot
-    worker_path: ./workers/autopilot
+  # autopilot intentionally disabled — iii#1524 tokio panic on libkrun boot.
+  # Re-enable once upstream lands.
+  # - name: autopilot
+  #   worker_path: ./workers/autopilot

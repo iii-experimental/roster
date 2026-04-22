@@ -26,11 +26,20 @@ function detectClis(): string[] {
 
 let runtimeId: string | null = null;
 
+function resolveHost(): string {
+  // os.hostname() inside a libkrun microVM usually returns the empty string
+  // or "(none)". Fall back to explicit env override, then a stable default.
+  const envHost = process.env.ROSTER_HOST || process.env.HOST || '';
+  const systemHost = os.hostname() || '';
+  const host = envHost || systemHost;
+  return host && host !== '(none)' ? host : 'libkrun-vm';
+}
+
 async function registerSelf() {
   const { runtime_id } = (await iii.trigger({
     function_id: 'runtimes::register',
     payload: {
-      host: os.hostname(),
+      host: resolveHost(),
       os: process.platform,
       arch: process.arch,
       clis_available: detectClis(),
