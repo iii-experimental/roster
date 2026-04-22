@@ -84,3 +84,25 @@ workers:
   # iii-hq/workers. During local development before then, add a worker_path
   # line here pointing to your local checkout. See docs/providers.md.
   - name: llm-router
+
+  # Phase-2 narrow workers (graduate to iii-hq/workers once stable).
+  - name: meter
+    worker_path: ./workers/meter
+
+  - name: guardrails
+    worker_path: ./workers/guardrails
+
+  - name: llm-budget
+    worker_path: ./workers/llm-budget
+
+  - name: auth
+    worker_path: ./workers/auth
+
+  - name: repocache
+    worker_path: ./workers/repocache
+
+  - name: mention
+    worker_path: ./workers/mention
+
+  - name: autopilot
+    worker_path: ./workers/autopilot
