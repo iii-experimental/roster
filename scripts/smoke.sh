@@ -12,7 +12,7 @@ AGENT_NAME="smoke-echo-bot-$$"
 say() { printf '\n\033[1;33m▸ %s\033[0m\n' "$*"; }
 die() { printf '\n\033[1;31m✖ %s\033[0m\n' "$*" >&2; exit 1; }
 
-command -v iii >/dev/null || die "iii CLI not found. Install: curl -fsSL https://iii.dev/install | bash"
+command -v iii >/dev/null || die "iii CLI not found. Install: curl -fsSL https://install.iii.dev/iii/main/install.sh | sh"
 command -v jq  >/dev/null || die "jq required. Install: brew install jq  (macOS)  or  apt-get install jq"
 
 # 1. make sure the engine is reachable

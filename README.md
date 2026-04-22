@@ -74,8 +74,8 @@ Add a new provider = one new narrow worker with `provider-<name>::complete({mode
 ## Quickstart
 
 ```bash
-# 1. install iii (>= 0.11.3)
-curl -fsSL https://iii.dev/install | bash
+# 1. install iii (>= 0.11.3). Canonical install command from https://iii.dev/docs/install
+curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
 iii update                     # if you already have it
 
 # 2. clone

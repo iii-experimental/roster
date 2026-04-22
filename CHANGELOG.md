@@ -24,7 +24,7 @@ Roster pins the underlying iii engine version exactly; each roster release names
 - `roster-orchestrator` startup publishes `ui::board` + `ui::runtimes` concurrently
 
 ### Required
-- iii engine `0.11.3` or newer. 0.11.2 is known-broken on local-path workers (see iii#1524). Install / upgrade with `curl -fsSL https://iii.dev/install | bash` or `iii update`.
+- iii engine `0.11.3` or newer. 0.11.2 is known-broken on local-path workers (see iii#1524). Install / upgrade with `curl -fsSL https://install.iii.dev/iii/main/install.sh | sh` or `iii update`.
 
 ---
 
