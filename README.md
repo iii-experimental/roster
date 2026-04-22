@@ -78,18 +78,21 @@ Add a new provider = one new narrow worker with `provider-<name>::complete({mode
 curl -fsSL https://iii.dev/install | bash
 iii update                     # if you already have it
 
-# 2. clone + install worker deps
+# 2. clone
 git clone https://github.com/iii-experimental/roster
 cd roster
-npm install --workspaces       # installs deps for each worker
+# (no host-side npm install needed — iii runs `npm install` inside each
+# microVM on first boot. Only run `npm install --workspaces` if you
+# want editor autocomplete / typecheck on the host.)
 
 # 3. pick at least one provider and set its key
 #    skip this if you only want to try the inline `echo/` model
 cp workers/provider-openrouter/.env.example workers/provider-openrouter/.env
 $EDITOR workers/provider-openrouter/.env     # set OPENROUTER_API_KEY
 
-# 4. set the auth worker secret (one-time)
-echo "AUTH_HMAC_SECRET=$(openssl rand -hex 32)" > workers/auth/.env
+# 4. set the auth worker secret (one-time — auth worker refuses to start without it)
+cp workers/auth/.env.example workers/auth/.env
+echo "AUTH_HMAC_SECRET=$(openssl rand -hex 32)" >> workers/auth/.env
 
 # 5. boot the engine — starts every worker as a local-path microVM
 iii

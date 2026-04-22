@@ -403,6 +403,14 @@ type ToastLevel = 'info' | 'success' | 'warn' | 'error';
 const showToast = (text: string, level: ToastLevel = 'info', ms = 3500) =>
   void PRIMS.toast({ text, level, ms });
 
+function describeError(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  if (/function_not_found|Function .* not found/i.test(raw)) {
+    return `${raw} → check \`iii worker list\`, the backing worker is down`;
+  }
+  return raw;
+}
+
 type FormField = { name: string; label: string; type?: 'text' | 'textarea'; placeholder?: string; required?: boolean };
 
 function openFormModal(opts: {
@@ -456,7 +464,7 @@ function openFormModal(opts: {
       await opts.onSubmit(values);
       wrap.remove();
     } catch (err) {
-      showToast(`Failed: ${(err as Error).message ?? err}`, 'error', 5000);
+      showToast(`Failed: ${describeError(err)}`, 'error', 5000);
       submitBtn.disabled = false;
       submitBtn.textContent = opts.submitLabel;
     }
@@ -544,7 +552,7 @@ function openAssignModal(issueId: string, issueTitle: string) {
         }
       }
     } catch (err) {
-      showToast(`Failed to load agents/runtimes: ${(err as Error).message}`, 'error');
+      showToast(`Failed to load agents/runtimes: ${describeError(err)}`, 'error');
     }
   })();
 
@@ -574,7 +582,7 @@ function openAssignModal(issueId: string, issueTitle: string) {
       showToast(`Handed over to ${agentName}`, 'success');
       wrap.remove();
     } catch (err) {
-      showToast(`Hand-over failed: ${(err as Error).message}`, 'error', 5000);
+      showToast(`Hand-over failed: ${describeError(err)}`, 'error', 5000);
       submitBtn.disabled = false;
       submitBtn.textContent = 'Hand over';
     }
