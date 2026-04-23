@@ -90,6 +90,17 @@ async function emitEvent(event: AgentEvent): Promise<void> {
   await iii.trigger({ function_id: 'agent::event_emit', payload: event });
 }
 
+async function emitEventSafe(event: AgentEvent, context: string): Promise<void> {
+  await emitEvent(event).catch((err) =>
+    log.warn('agent event emit failed', {
+      error: String(err),
+      context,
+      run_id: event.run_id,
+      phase: event.phase,
+    }),
+  );
+}
+
 // Any model id whose prefix is one of these lands on provider-cli. Every
 // other prefix resolves to provider-<prefix>. Echo is an inline test hook.
 const CLI_PREFIXES = new Set([
@@ -195,7 +206,7 @@ iii.registerFunction(
       run.status = 'failed';
       run.ended_at = Date.now();
       await stateSet(SCOPE, `agent_run:${runId}`, run);
-      await emitEvent({
+      await emitEventSafe({
         ts: Date.now(),
         run_id: runId,
         issue_id: run.issue_id,
@@ -204,7 +215,7 @@ iii.registerFunction(
         level: 'error',
         summary: 'Run failed',
         detail: String(err),
-      });
+      }, 'run-failure');
     });
 
     return { run_id: runId };
@@ -361,7 +372,7 @@ async function executeRun(run: Run, agent: AgentDef) {
   run.turns.push(turn);
   run.budget_used_usd += turn.cost_usd;
   await stateSet(SCOPE, `agent_run:${run.id}`, run);
-  await emitEvent({
+  await emitEventSafe({
     ts: Date.now(),
     run_id: run.id,
     issue_id: run.issue_id,
@@ -370,7 +381,7 @@ async function executeRun(run: Run, agent: AgentDef) {
     level: 'info',
     summary: 'Turn saved',
     detail: `#${turn.n} ${turn.role} · ${turn.ms}ms`,
-  });
+  }, 'turn-saved');
 
   await iii.trigger({
     function_id: 'thread::post',
@@ -382,7 +393,7 @@ async function executeRun(run: Run, agent: AgentDef) {
       markdown: true,
     },
   });
-  await emitEvent({
+  await emitEventSafe({
     ts: Date.now(),
     run_id: run.id,
     issue_id: run.issue_id,
@@ -391,7 +402,7 @@ async function executeRun(run: Run, agent: AgentDef) {
     level: 'info',
     summary: 'Posted agent response',
     detail: `thread ${thread.thread_id.slice(0, 8)}`,
-  });
+  }, 'thread-posted');
 
   // Re-read before writing the terminal state so a concurrent cancel isn't
   // overwritten. Provider failures end as 'failed', success as 'completed'.
@@ -400,7 +411,7 @@ async function executeRun(run: Run, agent: AgentDef) {
   run.status = result.ok ? 'completed' : 'failed';
   run.ended_at = Date.now();
   await stateSet(SCOPE, `agent_run:${run.id}`, run);
-  await emitEvent({
+  await emitEventSafe({
     ts: Date.now(),
     run_id: run.id,
     issue_id: run.issue_id,
@@ -409,7 +420,7 @@ async function executeRun(run: Run, agent: AgentDef) {
     level: result.ok ? 'info' : 'error',
     summary: result.ok ? 'Run completed' : 'Run failed',
     detail: result.ok ? 'Result ready for review' : (result.error ?? 'provider returned error'),
-  });
+  }, 'run-terminal');
 }
 
 log.info('agent worker registered');

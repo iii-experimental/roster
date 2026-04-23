@@ -6,6 +6,7 @@ const iii = registerWorker(III);
 
 const tabId = crypto.randomUUID();
 const PREFIX = `browser::tab::${tabId}`;
+const DEFAULT_MAX_TURN_CHARS = 800;
 
 const $ = (id: string): HTMLElement => {
   const el = document.getElementById(id);
@@ -658,9 +659,13 @@ document.addEventListener('click', (e) => {
   if (!body) return;
   e.preventDefault();
   const full = body.dataset.fullText ?? '';
+  const maxTurnChars = Number.parseInt(body.dataset.maxTurnChars ?? '', 10);
+  const previewLimit = Number.isFinite(maxTurnChars) && maxTurnChars > 0
+    ? maxTurnChars
+    : DEFAULT_MAX_TURN_CHARS;
   const isExpanded = body.dataset.expanded === '1';
   if (isExpanded) {
-    const short = full.length > 800 ? `${full.slice(0, 800)}…` : full;
+    const short = full.length > previewLimit ? `${full.slice(0, previewLimit)}…` : full;
     body.textContent = short;
     body.dataset.expanded = '0';
     body.dataset.truncated = '1';

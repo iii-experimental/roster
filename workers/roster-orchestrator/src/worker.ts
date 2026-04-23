@@ -9,6 +9,7 @@ const log = new Logger();
 const UI_SCOPE = 'roster';
 const AGENTS_SCOPE = 'agents';
 const AGENT_EVENTS_SCOPE = 'agent_events';
+const EVENT_REHYDRATE_DEBOUNCE_MS = 200;
 
 type Op = { fn: string; payload: Record<string, unknown> };
 type Status = 'open' | 'claimed' | 'running' | 'blocked' | 'review' | 'done' | 'abandoned';
@@ -68,6 +69,38 @@ type AgentEvent = {
 const TERMINAL_RUN_STATUSES: readonly RunStatus[] = ['completed', 'failed', 'cancelled'];
 
 const generations = new Map<string, number>();
+let boardEventRehydrateTimer: ReturnType<typeof setTimeout> | null = null;
+const runEventRehydrateTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+function scheduleBoardEventRehydrate() {
+  if (boardEventRehydrateTimer) clearTimeout(boardEventRehydrateTimer);
+  boardEventRehydrateTimer = setTimeout(() => {
+    boardEventRehydrateTimer = null;
+    void iii
+      .trigger({
+        function_id: 'roster-orchestrator::rehydrate',
+        payload: { view: 'board' },
+      })
+      .catch((err) => log.warn('board refresh failed', { error: String(err) }));
+  }, EVENT_REHYDRATE_DEBOUNCE_MS);
+}
+
+function scheduleRunEventRehydrate(runId: string) {
+  const prev = runEventRehydrateTimers.get(runId);
+  if (prev) clearTimeout(prev);
+  const timer = setTimeout(() => {
+    runEventRehydrateTimers.delete(runId);
+    void iii
+      .trigger({
+        function_id: 'roster-orchestrator::rehydrate',
+        payload: { view: 'run', run_id: runId },
+      })
+      .catch((err) =>
+        log.warn('run refresh from event failed', { error: String(err), run_id: runId }),
+      );
+  }, EVENT_REHYDRATE_DEBOUNCE_MS);
+  runEventRehydrateTimers.set(runId, timer);
+}
 
 async function publishKey(key: string, ops: Op[]) {
   const gen = (generations.get(key) ?? 0) + 1;
@@ -577,7 +610,12 @@ function buildRunOps(run: Run, issue: Issue | null, events: AgentEvent[]): Op[] 
       text,
     };
     if (truncated) {
-      bodyPayload.dataset = { truncated: '1', fullLength: String(raw.length), fullText: raw };
+      bodyPayload.dataset = {
+        truncated: '1',
+        fullLength: String(raw.length),
+        maxTurnChars: String(MAX_TURN_CHARS),
+        fullText: raw,
+      };
     }
     ops.push({ fn: 'createElement', payload: bodyPayload });
 
@@ -1071,21 +1109,9 @@ iii.registerFunction(
     const key = event?.key ?? '';
     if (!key.startsWith('run_event:')) return { skipped: 'not-run-event' };
     const ev = event?.new_value ?? null;
-    await iii
-      .trigger({
-        function_id: 'roster-orchestrator::rehydrate',
-        payload: { view: 'board' },
-      })
-      .catch((err) => log.warn('board refresh failed', { error: String(err) }));
+    scheduleBoardEventRehydrate();
     if (ev?.run_id) {
-      await iii
-        .trigger({
-          function_id: 'roster-orchestrator::rehydrate',
-          payload: { view: 'run', run_id: ev.run_id },
-        })
-        .catch((err) =>
-          log.warn('run refresh from event failed', { error: String(err), run_id: ev.run_id }),
-        );
+      scheduleRunEventRehydrate(ev.run_id);
       return { ok: true, run_id: ev.run_id };
     }
     return { ok: true };
