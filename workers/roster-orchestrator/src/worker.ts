@@ -10,6 +10,11 @@ const UI_SCOPE = 'roster';
 const AGENTS_SCOPE = 'agents';
 const AGENT_EVENTS_SCOPE = 'agent_events';
 const EVENT_REHYDRATE_DEBOUNCE_MS = 200;
+const FN_REHYDRATE = 'roster-orchestrator::rehydrate';
+const FN_ON_ISSUE_CHANGE = 'roster-orchestrator::on_issue_change';
+const FN_ON_RUNTIME_CHANGE = 'roster-orchestrator::on_runtime_change';
+const FN_ON_AGENTS_CHANGE = 'roster-orchestrator::on_agents_change';
+const FN_ON_AGENT_EVENTS_CHANGE = 'roster-orchestrator::on_agent_events_change';
 
 type Op = { fn: string; payload: Record<string, unknown> };
 type Status = 'open' | 'claimed' | 'running' | 'blocked' | 'review' | 'done' | 'abandoned';
@@ -78,7 +83,7 @@ function scheduleBoardEventRehydrate() {
     boardEventRehydrateTimer = null;
     void iii
       .trigger({
-        function_id: 'roster-orchestrator::rehydrate',
+        function_id: FN_REHYDRATE,
         payload: { view: 'board' },
       })
       .catch((err) => log.warn('board refresh failed', { error: String(err) }));
@@ -92,7 +97,7 @@ function scheduleRunEventRehydrate(runId: string) {
     runEventRehydrateTimers.delete(runId);
     void iii
       .trigger({
-        function_id: 'roster-orchestrator::rehydrate',
+        function_id: FN_REHYDRATE,
         payload: { view: 'run', run_id: runId },
       })
       .catch((err) =>
@@ -129,6 +134,8 @@ const listIssues = () => listScope<Issue>('issues', 'issue:');
 const listRuntimes = () => listScope<Runtime>('runtimes', 'runtime:');
 const listRuns = () => listScope<Run>(AGENTS_SCOPE, 'agent_run:');
 const listRunEvents = () => listScope<AgentEvent>(AGENT_EVENTS_SCOPE, 'run_event:');
+const listRunEventsForRun = (runId: string) =>
+  listScope<AgentEvent>(AGENT_EVENTS_SCOPE, `run_event:${runId}:`);
 const getIssue = (id: string) => stateGet<Issue>('issues', `issue:${id}`);
 const getRun = (id: string) => stateGet<Run>(AGENTS_SCOPE, `agent_run:${id}`);
 
@@ -330,8 +337,8 @@ function buildBoardOps(issues: Issue[], issueRuns: Map<string, Run>, events: Age
       },
     });
   } else {
-    for (const ev of boardEvents) {
-      const rowId = `board-evt-${ev.run_id.slice(0, 8)}-${ev.ts}`;
+    for (const [idx, ev] of boardEvents.entries()) {
+      const rowId = `board-evt-${ev.run_id.slice(0, 8)}-${ev.ts}-${idx}`;
       const issueId = sanitizeEventText(ev.issue_id);
       const issueTitle =
         issueId.length > 0
@@ -493,8 +500,8 @@ function buildRunOps(run: Run, issue: Issue | null, events: AgentEvent[]): Op[] 
       },
     });
   } else {
-    for (const ev of renderableEvents) {
-      const rowId = `event-${run.id}-${ev.ts}`;
+    for (const [idx, ev] of renderableEvents.entries()) {
+      const rowId = `event-${run.id}-${ev.ts}-${idx}`;
       const summary = sanitizeEventText(ev.summary);
       const detail = sanitizeEventText(ev.detail);
       ops.push({
@@ -771,8 +778,7 @@ async function renderRunDetail(runId: string, runHint?: Run | null) {
     return;
   }
   const issue = await getIssue(run.issue_id).catch(() => null);
-  const events = (await listRunEvents())
-    .filter((e) => e.run_id === run.id)
+  const events = (await listRunEventsForRun(run.id))
     .sort((a, b) => b.ts - a.ts)
     .slice(0, 20);
   await publishKey(`ui::run::${runId}`, buildRunOps(run, issue, events));
@@ -1027,7 +1033,7 @@ async function renderSettings() {
 }
 
 iii.registerFunction(
-  'roster-orchestrator::rehydrate',
+  FN_REHYDRATE,
   async (input: { tab_id?: string; view: string; run_id?: string }) => {
     switch (input.view) {
       case 'board':
@@ -1056,12 +1062,12 @@ iii.registerFunction(
   },
 );
 
-iii.registerFunction('roster-orchestrator::on_issue_change', async () => {
+iii.registerFunction(FN_ON_ISSUE_CHANGE, async () => {
   await renderBoard();
   return { ok: true };
 });
 
-iii.registerFunction('roster-orchestrator::on_runtime_change', async () => {
+iii.registerFunction(FN_ON_RUNTIME_CHANGE, async () => {
   await renderRuntimes();
   return { ok: true };
 });
@@ -1072,7 +1078,7 @@ iii.registerFunction('roster-orchestrator::on_runtime_change', async () => {
 // also re-renders when a run transitions to terminal so the "view run" link
 // is always present even when the issue row hasn't itself changed.
 iii.registerFunction(
-  'roster-orchestrator::on_agents_change',
+  FN_ON_AGENTS_CHANGE,
   async (event: {
     key?: string;
     new_value?: Run | Agent | null;
@@ -1104,7 +1110,7 @@ iii.registerFunction(
 );
 
 iii.registerFunction(
-  'roster-orchestrator::on_agent_events_change',
+  FN_ON_AGENT_EVENTS_CHANGE,
   async (event: { key?: string; new_value?: AgentEvent | null }) => {
     const key = event?.key ?? '';
     if (!key.startsWith('run_event:')) return { skipped: 'not-run-event' };
@@ -1120,25 +1126,25 @@ iii.registerFunction(
 
 iii.registerTrigger({
   type: 'state',
-  function_id: 'roster-orchestrator::on_issue_change',
+  function_id: FN_ON_ISSUE_CHANGE,
   config: { scope: 'issues' },
 });
 
 iii.registerTrigger({
   type: 'state',
-  function_id: 'roster-orchestrator::on_runtime_change',
+  function_id: FN_ON_RUNTIME_CHANGE,
   config: { scope: 'runtimes' },
 });
 
 iii.registerTrigger({
   type: 'state',
-  function_id: 'roster-orchestrator::on_agents_change',
+  function_id: FN_ON_AGENTS_CHANGE,
   config: { scope: AGENTS_SCOPE },
 });
 
 iii.registerTrigger({
   type: 'state',
-  function_id: 'roster-orchestrator::on_agent_events_change',
+  function_id: FN_ON_AGENT_EVENTS_CHANGE,
   config: { scope: AGENT_EVENTS_SCOPE },
 });
 
