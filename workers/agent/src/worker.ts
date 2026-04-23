@@ -11,6 +11,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 const SCOPE = 'agents';
+const EVENTS_SCOPE = 'agent_events';
 
 type AgentDef = {
   id: string;
@@ -46,6 +47,25 @@ type Run = {
   budget_used_usd: number;
 };
 
+type AgentEvent = {
+  ts: number;
+  run_id: string;
+  issue_id: string;
+  agent_id: string;
+  phase:
+    | 'run_started'
+    | 'thread_opened'
+    | 'routing'
+    | 'provider_call'
+    | 'turn_saved'
+    | 'thread_posted'
+    | 'run_terminal'
+    | 'run_cancelled';
+  level?: 'info' | 'warn' | 'error';
+  summary: string;
+  detail?: string;
+};
+
 type CompleteResult = {
   ok: boolean;
   text: string;
@@ -54,11 +74,21 @@ type CompleteResult = {
   usage?: { prompt_tokens?: number; completion_tokens?: number; cost_usd?: number };
 };
 
+type RouterDecision = {
+  model?: string;
+  reason?: string;
+  policy_id?: string;
+};
+
 const stateSet = (scope: string, key: string, value: unknown) =>
   iii.trigger({ function_id: 'state::set', payload: { scope, key, value } });
 
 const stateGet = async <T>(scope: string, key: string): Promise<T | null> =>
   ((await iii.trigger({ function_id: 'state::get', payload: { scope, key } })) as T | null) ?? null;
+
+async function emitEvent(event: AgentEvent): Promise<void> {
+  await iii.trigger({ function_id: 'agent::event_emit', payload: event });
+}
 
 // Any model id whose prefix is one of these lands on provider-cli. Every
 // other prefix resolves to provider-<prefix>. Echo is an inline test hook.
@@ -92,6 +122,13 @@ async function complete(model: string, prompt: string): Promise<CompleteResult> 
 iii.registerFunction('agent::providers_detect', async (_input: { runtime_id?: string }) => {
   const r = (await iii.trigger({ function_id: 'shell::detect_clis', payload: {} })) as { clis: string[] };
   return { providers: r.clis };
+});
+
+iii.registerFunction('agent::event_emit', async (input: AgentEvent) => {
+  const id = crypto.randomUUID().slice(0, 8);
+  const key = `run_event:${input.run_id}:${input.ts}:${id}`;
+  await stateSet(EVENTS_SCOPE, key, input);
+  return { ok: true, key };
 });
 
 iii.registerFunction(
@@ -140,6 +177,16 @@ iii.registerFunction(
       budget_used_usd: 0,
     };
     await stateSet(SCOPE, `agent_run:${runId}`, run);
+    await emitEvent({
+      ts: Date.now(),
+      run_id: runId,
+      issue_id: input.issue_id,
+      agent_id: input.agent_id,
+      phase: 'run_started',
+      level: 'info',
+      summary: 'Run started',
+      detail: `Agent ${agent.name} picked up issue ${input.issue_id.slice(0, 8)}`,
+    });
 
     void executeRun(run, agent).catch(async (err) => {
       log.error('run failed', { run_id: runId, error: String(err) });
@@ -148,6 +195,16 @@ iii.registerFunction(
       run.status = 'failed';
       run.ended_at = Date.now();
       await stateSet(SCOPE, `agent_run:${runId}`, run);
+      await emitEvent({
+        ts: Date.now(),
+        run_id: runId,
+        issue_id: run.issue_id,
+        agent_id: run.agent_id,
+        phase: 'run_terminal',
+        level: 'error',
+        summary: 'Run failed',
+        detail: String(err),
+      });
     });
 
     return { run_id: runId };
@@ -165,6 +222,16 @@ iii.registerFunction('agent::run_cancel', async (input: { run_id: string }) => {
     run.status = 'cancelled';
     run.ended_at = Date.now();
     await stateSet(SCOPE, `agent_run:${input.run_id}`, run);
+    await emitEvent({
+      ts: Date.now(),
+      run_id: run.id,
+      issue_id: run.issue_id,
+      agent_id: run.agent_id,
+      phase: 'run_cancelled',
+      level: 'warn',
+      summary: 'Run cancelled',
+      detail: 'Cancelled by user request',
+    });
   }
   return { ok: true, status: run.status };
 });
@@ -180,6 +247,16 @@ async function executeRun(run: Run, agent: AgentDef) {
     function_id: 'thread::open',
     payload: { parent_type: 'agent_run', parent_id: run.id },
   })) as { thread_id: string };
+  await emitEvent({
+    ts: Date.now(),
+    run_id: run.id,
+    issue_id: run.issue_id,
+    agent_id: run.agent_id,
+    phase: 'thread_opened',
+    level: 'info',
+    summary: 'Discussion thread opened',
+    detail: `thread ${thread.thread_id.slice(0, 8)}`,
+  });
 
   await iii.trigger({
     function_id: 'thread::system_msg',
@@ -196,7 +273,16 @@ async function executeRun(run: Run, agent: AgentDef) {
 
   // router is unopinionated: policies + catalog live in runtime state. Falls
   // back to the agent's declared provider when no policy matches.
-  let decision: { model?: string; reason?: string; policy_id?: string } | null = null;
+  let decision: RouterDecision | null = null;
+  await emitEvent({
+    ts: Date.now(),
+    run_id: run.id,
+    issue_id: run.issue_id,
+    agent_id: run.agent_id,
+    phase: 'routing',
+    level: 'info',
+    summary: 'Routing model for task',
+  });
   try {
     decision = (await iii.trigger({
       function_id: 'router::decide',
@@ -207,16 +293,46 @@ async function executeRun(run: Run, agent: AgentDef) {
         prompt,
         tags: [agent.provider, ...(agent.capabilities ?? [])],
       },
-    })) as typeof decision;
+    })) as RouterDecision;
   } catch (err) {
     log.warn('router::decide skipped', { error: String(err) });
   }
 
   const model = decision?.model || `${agent.provider}/default`;
+  await emitEvent({
+    ts: Date.now(),
+    run_id: run.id,
+    issue_id: run.issue_id,
+    agent_id: run.agent_id,
+    phase: 'routing',
+    level: 'info',
+    summary: 'Model selected',
+    detail: `${model}${decision?.reason ? ` (${decision.reason})` : ''}`,
+  });
   const turnStart = Date.now();
+  await emitEvent({
+    ts: Date.now(),
+    run_id: run.id,
+    issue_id: run.issue_id,
+    agent_id: run.agent_id,
+    phase: 'provider_call',
+    level: 'info',
+    summary: 'Calling provider',
+    detail: model,
+  });
   const result = await complete(model, prompt).catch(
     (err): CompleteResult => ({ ok: false, text: '', model, error: String(err) }),
   );
+  await emitEvent({
+    ts: Date.now(),
+    run_id: run.id,
+    issue_id: run.issue_id,
+    agent_id: run.agent_id,
+    phase: 'provider_call',
+    level: result.ok ? 'info' : 'error',
+    summary: result.ok ? 'Provider responded' : 'Provider call failed',
+    detail: result.ok ? `${Date.now() - turnStart}ms` : (result.error ?? 'unknown error'),
+  });
 
   const answer = result.ok ? result.text : `[provider error] ${result.error ?? 'unknown'}`;
 
@@ -245,6 +361,16 @@ async function executeRun(run: Run, agent: AgentDef) {
   run.turns.push(turn);
   run.budget_used_usd += turn.cost_usd;
   await stateSet(SCOPE, `agent_run:${run.id}`, run);
+  await emitEvent({
+    ts: Date.now(),
+    run_id: run.id,
+    issue_id: run.issue_id,
+    agent_id: run.agent_id,
+    phase: 'turn_saved',
+    level: 'info',
+    summary: 'Turn saved',
+    detail: `#${turn.n} ${turn.role} · ${turn.ms}ms`,
+  });
 
   await iii.trigger({
     function_id: 'thread::post',
@@ -256,6 +382,16 @@ async function executeRun(run: Run, agent: AgentDef) {
       markdown: true,
     },
   });
+  await emitEvent({
+    ts: Date.now(),
+    run_id: run.id,
+    issue_id: run.issue_id,
+    agent_id: run.agent_id,
+    phase: 'thread_posted',
+    level: 'info',
+    summary: 'Posted agent response',
+    detail: `thread ${thread.thread_id.slice(0, 8)}`,
+  });
 
   // Re-read before writing the terminal state so a concurrent cancel isn't
   // overwritten. Provider failures end as 'failed', success as 'completed'.
@@ -264,6 +400,16 @@ async function executeRun(run: Run, agent: AgentDef) {
   run.status = result.ok ? 'completed' : 'failed';
   run.ended_at = Date.now();
   await stateSet(SCOPE, `agent_run:${run.id}`, run);
+  await emitEvent({
+    ts: Date.now(),
+    run_id: run.id,
+    issue_id: run.issue_id,
+    agent_id: run.agent_id,
+    phase: 'run_terminal',
+    level: result.ok ? 'info' : 'error',
+    summary: result.ok ? 'Run completed' : 'Run failed',
+    detail: result.ok ? 'Result ready for review' : (result.error ?? 'provider returned error'),
+  });
 }
 
 log.info('agent worker registered');

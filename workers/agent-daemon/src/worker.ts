@@ -26,6 +26,13 @@ function detectClis(): string[] {
 
 let runtimeId: string | null = null;
 
+type AgentDef = {
+  id: string;
+  workspace_id: string;
+  name: string;
+  provider: string;
+};
+
 function resolveHost(): string {
   // os.hostname() inside a libkrun microVM usually returns the empty string
   // or "(none)". Fall back to explicit env override, then a stable default.
@@ -47,6 +54,29 @@ async function registerSelf() {
   })) as { runtime_id: string };
   runtimeId = runtime_id;
   log.info('runtime registered', { runtime_id });
+}
+
+async function ensureDefaultAgent() {
+  const list = (await iii.trigger({
+    function_id: 'state::list',
+    payload: { scope: 'agents', prefix: 'agent:' },
+  })) as AgentDef[];
+
+  const hasDefault = Array.isArray(list) && list.some((a) => a?.workspace_id === 'default');
+  if (hasDefault) return;
+
+  const nameSuffix = runtimeId ? runtimeId.slice(0, 6) : 'local';
+  await iii.trigger({
+    function_id: 'agent::register',
+    payload: {
+      workspace_id: 'default',
+      name: `default-agent-${nameSuffix}`,
+      provider: 'echo',
+      runtime_id: runtimeId ?? undefined,
+      capabilities: ['general'],
+    },
+  });
+  log.info('default agent auto-registered', { runtime_id: runtimeId });
 }
 
 async function heartbeat() {
@@ -153,6 +183,7 @@ process.on('unhandledRejection', (reason) => {
 (async () => {
   try {
     await registerWithRetry();
+    await ensureDefaultAgent();
   } catch (err) {
     log.error('agent-daemon startup failed, exiting for supervisor restart', { error: String(err) });
     process.exit(1);
