@@ -43,25 +43,32 @@
 
         <section id="viewBody">
           <div id="board" class="view active">
-            <div class="column" data-status="open">
-              <h2 class="columnHeader"><span>OPEN</span> <span id="countOpen" class="mono">0</span></h2>
-              <div id="colOpen" class="columnBody"></div>
+            <div id="boardColumns">
+              <div class="column" data-status="open">
+                <h2 class="columnHeader"><span>OPEN</span> <span id="countOpen" class="mono">0</span></h2>
+                <div id="colOpen" class="columnBody"></div>
+              </div>
+              <div class="column" data-status="claimed">
+                <h2 class="columnHeader"><span>CLAIMED</span> <span id="countClaimed" class="mono">0</span></h2>
+                <div id="colClaimed" class="columnBody"></div>
+              </div>
+              <div class="column" data-status="running">
+                <h2 class="columnHeader"><span>RUNNING</span> <span id="countRunning" class="mono">0</span></h2>
+                <div id="colRunning" class="columnBody"></div>
+              </div>
+              <div class="column" data-status="review">
+                <h2 class="columnHeader"><span>REVIEW</span> <span id="countReview" class="mono">0</span></h2>
+                <div id="colReview" class="columnBody"></div>
+              </div>
+              <div class="column" data-status="done">
+                <h2 class="columnHeader"><span>DONE</span> <span id="countDone" class="mono">0</span></h2>
+                <div id="colDone" class="columnBody"></div>
+              </div>
             </div>
-            <div class="column" data-status="claimed">
-              <h2 class="columnHeader"><span>CLAIMED</span> <span id="countClaimed" class="mono">0</span></h2>
-              <div id="colClaimed" class="columnBody"></div>
-            </div>
-            <div class="column" data-status="running">
-              <h2 class="columnHeader"><span>RUNNING</span> <span id="countRunning" class="mono">0</span></h2>
-              <div id="colRunning" class="columnBody"></div>
-            </div>
-            <div class="column" data-status="review">
-              <h2 class="columnHeader"><span>REVIEW</span> <span id="countReview" class="mono">0</span></h2>
-              <div id="colReview" class="columnBody"></div>
-            </div>
-            <div class="column" data-status="done">
-              <h2 class="columnHeader"><span>DONE</span> <span id="countDone" class="mono">0</span></h2>
-              <div id="colDone" class="columnBody"></div>
+            <div id="liveActivity" class="card">
+              <div class="cardTitle">Live Activity</div>
+              <div class="cardMeta">Events from active runs appear here in real time.</div>
+              <div id="liveActivityList"></div>
             </div>
           </div>
 

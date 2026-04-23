@@ -8,6 +8,13 @@ const log = new Logger();
 
 const UI_SCOPE = 'roster';
 const AGENTS_SCOPE = 'agents';
+const AGENT_EVENTS_SCOPE = 'agent_events';
+const EVENT_REHYDRATE_DEBOUNCE_MS = 200;
+const FN_REHYDRATE = 'roster-orchestrator::rehydrate';
+const FN_ON_ISSUE_CHANGE = 'roster-orchestrator::on_issue_change';
+const FN_ON_RUNTIME_CHANGE = 'roster-orchestrator::on_runtime_change';
+const FN_ON_AGENTS_CHANGE = 'roster-orchestrator::on_agents_change';
+const FN_ON_AGENT_EVENTS_CHANGE = 'roster-orchestrator::on_agent_events_change';
 
 type Op = { fn: string; payload: Record<string, unknown> };
 type Status = 'open' | 'claimed' | 'running' | 'blocked' | 'review' | 'done' | 'abandoned';
@@ -53,10 +60,52 @@ type Run = {
   turns: Turn[];
   budget_used_usd: number;
 };
+type AgentEvent = {
+  ts: number;
+  run_id: string;
+  issue_id: string;
+  agent_id: string;
+  phase: string;
+  level?: 'info' | 'warn' | 'error';
+  summary: string;
+  detail?: string;
+};
 
 const TERMINAL_RUN_STATUSES: readonly RunStatus[] = ['completed', 'failed', 'cancelled'];
 
 const generations = new Map<string, number>();
+let boardEventRehydrateTimer: ReturnType<typeof setTimeout> | null = null;
+const runEventRehydrateTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+function scheduleBoardEventRehydrate() {
+  if (boardEventRehydrateTimer) clearTimeout(boardEventRehydrateTimer);
+  boardEventRehydrateTimer = setTimeout(() => {
+    boardEventRehydrateTimer = null;
+    void iii
+      .trigger({
+        function_id: FN_REHYDRATE,
+        payload: { view: 'board' },
+      })
+      .catch((err) => log.warn('board refresh failed', { error: String(err) }));
+  }, EVENT_REHYDRATE_DEBOUNCE_MS);
+}
+
+function scheduleRunEventRehydrate(runId: string) {
+  const prev = runEventRehydrateTimers.get(runId);
+  if (prev) clearTimeout(prev);
+  const timer = setTimeout(() => {
+    runEventRehydrateTimers.delete(runId);
+    void iii
+      .trigger({
+        function_id: FN_REHYDRATE,
+        payload: { view: 'run', run_id: runId },
+      })
+      .catch((err) =>
+        log.warn('run refresh from event failed', { error: String(err), run_id: runId }),
+      );
+  }, EVENT_REHYDRATE_DEBOUNCE_MS);
+  runEventRehydrateTimers.set(runId, timer);
+}
 
 async function publishKey(key: string, ops: Op[]) {
   const gen = (generations.get(key) ?? 0) + 1;
@@ -84,19 +133,22 @@ async function stateGet<T>(scope: string, key: string): Promise<T | null> {
 const listIssues = () => listScope<Issue>('issues', 'issue:');
 const listRuntimes = () => listScope<Runtime>('runtimes', 'runtime:');
 const listRuns = () => listScope<Run>(AGENTS_SCOPE, 'agent_run:');
+const listRunEvents = () => listScope<AgentEvent>(AGENT_EVENTS_SCOPE, 'run_event:');
+const listRunEventsForRun = (runId: string) =>
+  listScope<AgentEvent>(AGENT_EVENTS_SCOPE, `run_event:${runId}:`);
 const getIssue = (id: string) => stateGet<Issue>('issues', `issue:${id}`);
 const getRun = (id: string) => stateGet<Run>(AGENTS_SCOPE, `agent_run:${id}`);
 
 // Map each issue to its most recent run_id, so board cards can link to the
 // live run-detail view. Older runs for the same issue are silently dropped.
-function issueToLatestRun(runs: Run[]): Map<string, string> {
-  const out = new Map<string, string>();
+function issueToLatestRun(runs: Run[]): Map<string, Run> {
+  const out = new Map<string, Run>();
   const latest = new Map<string, number>();
   for (const r of runs) {
     const prev = latest.get(r.issue_id) ?? -Infinity;
     if (r.started_at >= prev) {
       latest.set(r.issue_id, r.started_at);
-      out.set(r.issue_id, r.id);
+      out.set(r.issue_id, r);
     }
   }
   return out;
@@ -115,7 +167,20 @@ const STATUS_TO_COLUMN: Record<string, string> = {
   abandoned: 'done',
 };
 
-function buildBoardOps(issues: Issue[], issueRuns: Map<string, string>): Op[] {
+function summarizeRunActivity(run: Run): string {
+  if (run.turns.length === 0) return 'agent picked up task, waiting for first turn';
+  const last = run.turns[run.turns.length - 1];
+  if (last.tool_calls && last.tool_calls.length > 0) {
+    const call = last.tool_calls[0] as { name?: string; input?: Record<string, unknown> };
+    const cmd = typeof call?.input?.cmd === 'string' ? `: ${call.input.cmd}` : '';
+    return `tool ${call?.name ?? 'call'}${cmd}`;
+  }
+  const raw = (last.content ?? '').trim().replace(/\s+/g, ' ');
+  const text = raw.length > 90 ? `${raw.slice(0, 90)}…` : raw;
+  return `${last.role}: ${text || 'working...'}`;
+}
+
+function buildBoardOps(issues: Issue[], issueRuns: Map<string, Run>, events: AgentEvent[]): Op[] {
   const columns: Record<string, Issue[]> = {
     open: [], claimed: [], running: [], review: [], done: [],
   };
@@ -133,6 +198,7 @@ function buildBoardOps(issues: Issue[], issueRuns: Map<string, string>): Op[] {
     { fn: 'setTitle', payload: { title: 'roster · board' } },
     { fn: 'setText', payload: { id: 'viewTitle', text: 'Board' } },
     { fn: 'setText', payload: { id: 'viewStats', text: statsText } },
+    { fn: 'clearChildren', payload: { id: 'liveActivityList' } },
   ];
 
   for (const [status, list] of Object.entries(columns)) {
@@ -188,22 +254,130 @@ function buildBoardOps(issues: Issue[], issueRuns: Map<string, string>): Op[] {
           },
         });
       }
-      const runId = issueRuns.get(issue.id);
-      if (runId) {
+      const run = issueRuns.get(issue.id);
+      if (issue.status === 'running' || issue.status === 'review' || issue.status === 'blocked') {
+        const fallback =
+          issue.status === 'running'
+            ? 'running... waiting for live turn telemetry'
+            : issue.status === 'blocked'
+              ? 'blocked: reviewer action needed'
+              : 'ready for review';
+        ops.push({
+          fn: 'createElement',
+          payload: {
+            parentId: cardId,
+            tag: 'div',
+            className: 'cardActivity mono',
+            text: run ? summarizeRunActivity(run) : fallback,
+          },
+        });
+      }
+      if (run) {
         ops.push({
           fn: 'createElement',
           payload: {
             parentId: metaId,
             tag: 'a',
             className: 'cardLink mono',
-            text: 'view run',
-            attributes: { href: `/runs/${runId}`, 'data-run-id': runId },
+            text: issue.status === 'running' ? 'live run' : issue.status === 'review' ? 'review →' : 'view run',
+            attributes: { href: `/runs/${run.id}`, 'data-run-id': run.id },
+          },
+        });
+      }
+      if (issue.status === 'review') {
+        ops.push({
+          fn: 'createElement',
+          payload: {
+            parentId: metaId,
+            tag: 'a',
+            className: 'cardLink mono',
+            text: 'approve ✓',
+            attributes: {
+              href: '#',
+              'data-action': 'approve',
+              'data-issue-id': issue.id,
+              'data-issue-title': issue.title,
+            },
+          },
+        });
+      }
+      if (issue.status === 'blocked') {
+        ops.push({
+          fn: 'createElement',
+          payload: {
+            parentId: metaId,
+            tag: 'a',
+            className: 'cardLink mono',
+            text: 'reopen ↺',
+            attributes: {
+              href: '#',
+              'data-action': 'reopen',
+              'data-issue-id': issue.id,
+              'data-issue-title': issue.title,
+            },
           },
         });
       }
     }
   }
 
+  const issueById = new Map(issues.map((i) => [i.id, i]));
+  const boardEvents = events
+    .filter((e) => e && typeof e === 'object' && isRenderableEvent(e))
+    .sort((a, b) => b.ts - a.ts)
+    .slice(0, 30);
+  if (boardEvents.length === 0) {
+    ops.push({
+      fn: 'createElement',
+      payload: {
+        parentId: 'liveActivityList',
+        tag: 'div',
+        className: 'cardMeta',
+        text: 'No live events yet. Start a run to stream progress here.',
+      },
+    });
+  } else {
+    for (const [idx, ev] of boardEvents.entries()) {
+      const rowId = `board-evt-${ev.run_id.slice(0, 8)}-${ev.ts}-${idx}`;
+      const issueId = sanitizeEventText(ev.issue_id);
+      const issueTitle =
+        issueId.length > 0
+          ? (issueById.get(issueId)?.title ?? issueId.slice(0, 8))
+          : 'unknown issue';
+      const detailText = sanitizeEventText(ev.detail);
+      ops.push({
+        fn: 'createElement',
+        payload: {
+          parentId: 'liveActivityList',
+          tag: 'div',
+          id: rowId,
+          className: `activityItem ${ev.level ?? 'info'}`,
+        },
+      });
+      const headId = `${rowId}-head`;
+      ops.push({
+        fn: 'createElement',
+        payload: { parentId: rowId, tag: 'div', id: headId, className: 'activityHead mono' },
+      });
+      ops.push({
+        fn: 'createElement',
+        payload: { parentId: headId, tag: 'span', text: sanitizeEventText(ev.summary) },
+      });
+      ops.push({
+        fn: 'createElement',
+        payload: { parentId: headId, tag: 'span', text: formatEventTime(ev.ts) },
+      });
+      ops.push({
+        fn: 'createElement',
+        payload: {
+          parentId: rowId,
+          tag: 'div',
+          className: 'activityDetail mono',
+          text: `${issueTitle} · run ${ev.run_id.slice(0, 8)}${detailText ? `\n${detailText}` : ''}`,
+        },
+      });
+    }
+  }
   return ops;
 }
 
@@ -221,7 +395,52 @@ function truncate(s: string, limit = MAX_TURN_CHARS): { text: string; truncated:
   return { text: `${s.slice(0, limit)}…`, truncated: true };
 }
 
-function buildRunOps(run: Run, issue: Issue | null): Op[] {
+function runExplanation(run: Run, issueTitle: string): { headline: string; detail: string; now: string } {
+  const toolCalls = run.turns.reduce((n, t) => n + (Array.isArray(t.tool_calls) ? t.tool_calls.length : 0), 0);
+  const lastTurn = run.turns[run.turns.length - 1];
+  const headline =
+    run.status === 'running'
+      ? 'Agent is actively working'
+      : run.status === 'failed'
+        ? 'Run ended with a failure'
+        : run.status === 'cancelled'
+          ? 'Run was cancelled'
+          : 'Run is complete';
+
+  const now = lastTurn
+    ? `last event: #${lastTurn.n} ${lastTurn.role}`
+    : 'last event: run started, waiting for first turn';
+
+  const detail =
+    `${issueTitle} · ${run.turns.length} turn${run.turns.length === 1 ? '' : 's'} · ` +
+    `${toolCalls} tool call${toolCalls === 1 ? '' : 's'}` +
+    (toolCalls === 0 ? ' (no command/tool trace was emitted by this run)' : '');
+
+  return { headline, detail, now };
+}
+
+function formatEventTime(ts: number): string {
+  if (!Number.isFinite(ts)) return 'just now';
+  const ago = Math.max(0, Math.round((Date.now() - ts) / 1000));
+  if (ago < 60) return `${ago}s ago`;
+  const m = Math.round(ago / 60);
+  return `${m}m ago`;
+}
+
+function sanitizeEventText(v: unknown): string {
+  if (typeof v !== 'string') return '';
+  const t = v.trim().replace(/\bnull\b/gi, 'unknown').replace(/\bundefined\b/gi, 'unknown');
+  if (!t || t.toLowerCase() === 'null' || t.toLowerCase() === 'undefined') return '';
+  return t;
+}
+
+function isRenderableEvent(e: AgentEvent): boolean {
+  const runId = sanitizeEventText(e.run_id);
+  const summary = sanitizeEventText(e.summary);
+  return runId.length > 0 && summary.length > 0 && Number.isFinite(e.ts);
+}
+
+function buildRunOps(run: Run, issue: Issue | null, events: AgentEvent[]): Op[] {
   const shortId = run.id.slice(0, 8);
   const startedIso = new Date(run.started_at).toISOString();
   const updatedTs = run.ended_at ?? Date.now();
@@ -240,6 +459,81 @@ function buildRunOps(run: Run, issue: Issue | null): Op[] {
     { fn: 'setText', payload: { id: 'viewStats', text: statsLine } },
     { fn: 'clearChildren', payload: { id: 'runTurns' } },
   ];
+
+  const expl = runExplanation(run, issueTitle);
+  const explainId = `run-explain-${run.id}`;
+  ops.push({
+    fn: 'createElement',
+    payload: { parentId: 'runTurns', tag: 'div', id: explainId, className: 'runExplain card' },
+  });
+  ops.push({
+    fn: 'createElement',
+    payload: { parentId: explainId, tag: 'div', className: 'cardTitle', text: expl.headline },
+  });
+  ops.push({
+    fn: 'createElement',
+    payload: { parentId: explainId, tag: 'div', className: 'cardMeta', text: expl.detail },
+  });
+  ops.push({
+    fn: 'createElement',
+    payload: { parentId: explainId, tag: 'div', className: 'cardMeta mono', text: expl.now },
+  });
+
+  const eventWrapId = `run-events-${run.id}`;
+  ops.push({
+    fn: 'createElement',
+    payload: { parentId: 'runTurns', tag: 'div', id: eventWrapId, className: 'card runEvents' },
+  });
+  ops.push({
+    fn: 'createElement',
+    payload: { parentId: eventWrapId, tag: 'div', className: 'cardTitle', text: 'Live activity timeline' },
+  });
+  const renderableEvents = events.filter(isRenderableEvent);
+  if (renderableEvents.length === 0) {
+    ops.push({
+      fn: 'createElement',
+      payload: {
+        parentId: eventWrapId,
+        tag: 'div',
+        className: 'cardMeta',
+        text: 'No execution events yet. Event stream appears when the worker publishes progress.',
+      },
+    });
+  } else {
+    for (const [idx, ev] of renderableEvents.entries()) {
+      const rowId = `event-${run.id}-${ev.ts}-${idx}`;
+      const summary = sanitizeEventText(ev.summary);
+      const detail = sanitizeEventText(ev.detail);
+      ops.push({
+        fn: 'createElement',
+        payload: {
+          parentId: eventWrapId,
+          tag: 'div',
+          id: rowId,
+          className: `runEvent ${ev.level ?? 'info'}`,
+        },
+      });
+      const head = `${rowId}-head`;
+      ops.push({
+        fn: 'createElement',
+        payload: { parentId: rowId, tag: 'div', id: head, className: 'runEventHead mono' },
+      });
+      ops.push({
+        fn: 'createElement',
+        payload: { parentId: head, tag: 'span', text: summary },
+      });
+      ops.push({
+        fn: 'createElement',
+        payload: { parentId: head, tag: 'span', text: formatEventTime(ev.ts) },
+      });
+      if (detail) {
+        ops.push({
+          fn: 'createElement',
+          payload: { parentId: rowId, tag: 'div', className: 'runEventDetail mono', text: detail },
+        });
+      }
+    }
+  }
 
   const headerId = `run-header-${run.id}`;
   ops.push({
@@ -323,7 +617,12 @@ function buildRunOps(run: Run, issue: Issue | null): Op[] {
       text,
     };
     if (truncated) {
-      bodyPayload.dataset = { truncated: '1', fullLength: String(raw.length) };
+      bodyPayload.dataset = {
+        truncated: '1',
+        fullLength: String(raw.length),
+        maxTurnChars: String(MAX_TURN_CHARS),
+        fullText: raw,
+      };
     }
     ops.push({ fn: 'createElement', payload: bodyPayload });
 
@@ -459,8 +758,8 @@ function buildRuntimesOps(runtimes: Runtime[]): Op[] {
 }
 
 async function renderBoard() {
-  const [issues, runs] = await Promise.all([listIssues(), listRuns()]);
-  await publishView('board', buildBoardOps(issues, issueToLatestRun(runs)));
+  const [issues, runs, events] = await Promise.all([listIssues(), listRuns(), listRunEvents()]);
+  await publishView('board', buildBoardOps(issues, issueToLatestRun(runs), events));
 }
 
 async function renderRuntimes() {
@@ -479,7 +778,10 @@ async function renderRunDetail(runId: string, runHint?: Run | null) {
     return;
   }
   const issue = await getIssue(run.issue_id).catch(() => null);
-  await publishKey(`ui::run::${runId}`, buildRunOps(run, issue));
+  const events = (await listRunEventsForRun(run.id))
+    .sort((a, b) => b.ts - a.ts)
+    .slice(0, 20);
+  await publishKey(`ui::run::${runId}`, buildRunOps(run, issue, events));
 }
 
 async function renderPlaceholder(view: string) {
@@ -731,7 +1033,7 @@ async function renderSettings() {
 }
 
 iii.registerFunction(
-  'roster-orchestrator::rehydrate',
+  FN_REHYDRATE,
   async (input: { tab_id?: string; view: string; run_id?: string }) => {
     switch (input.view) {
       case 'board':
@@ -760,12 +1062,12 @@ iii.registerFunction(
   },
 );
 
-iii.registerFunction('roster-orchestrator::on_issue_change', async () => {
+iii.registerFunction(FN_ON_ISSUE_CHANGE, async () => {
   await renderBoard();
   return { ok: true };
 });
 
-iii.registerFunction('roster-orchestrator::on_runtime_change', async () => {
+iii.registerFunction(FN_ON_RUNTIME_CHANGE, async () => {
   await renderRuntimes();
   return { ok: true };
 });
@@ -776,7 +1078,7 @@ iii.registerFunction('roster-orchestrator::on_runtime_change', async () => {
 // also re-renders when a run transitions to terminal so the "view run" link
 // is always present even when the issue row hasn't itself changed.
 iii.registerFunction(
-  'roster-orchestrator::on_agents_change',
+  FN_ON_AGENTS_CHANGE,
   async (event: {
     key?: string;
     new_value?: Run | Agent | null;
@@ -807,22 +1109,43 @@ iii.registerFunction(
   },
 );
 
+iii.registerFunction(
+  FN_ON_AGENT_EVENTS_CHANGE,
+  async (event: { key?: string; new_value?: AgentEvent | null }) => {
+    const key = event?.key ?? '';
+    if (!key.startsWith('run_event:')) return { skipped: 'not-run-event' };
+    const ev = event?.new_value ?? null;
+    scheduleBoardEventRehydrate();
+    if (ev?.run_id) {
+      scheduleRunEventRehydrate(ev.run_id);
+      return { ok: true, run_id: ev.run_id };
+    }
+    return { ok: true };
+  },
+);
+
 iii.registerTrigger({
   type: 'state',
-  function_id: 'roster-orchestrator::on_issue_change',
+  function_id: FN_ON_ISSUE_CHANGE,
   config: { scope: 'issues' },
 });
 
 iii.registerTrigger({
   type: 'state',
-  function_id: 'roster-orchestrator::on_runtime_change',
+  function_id: FN_ON_RUNTIME_CHANGE,
   config: { scope: 'runtimes' },
 });
 
 iii.registerTrigger({
   type: 'state',
-  function_id: 'roster-orchestrator::on_agents_change',
+  function_id: FN_ON_AGENTS_CHANGE,
   config: { scope: AGENTS_SCOPE },
+});
+
+iii.registerTrigger({
+  type: 'state',
+  function_id: FN_ON_AGENT_EVENTS_CHANGE,
+  config: { scope: AGENT_EVENTS_SCOPE },
 });
 
 (async () => {

@@ -6,6 +6,7 @@ const iii = registerWorker(III);
 
 const tabId = crypto.randomUUID();
 const PREFIX = `browser::tab::${tabId}`;
+const DEFAULT_MAX_TURN_CHARS = 800;
 
 const $ = (id: string): HTMLElement => {
   const el = document.getElementById(id);
@@ -616,17 +617,64 @@ function openAssignModal(issueId: string, issueTitle: string) {
   });
 }
 
+async function updateIssueStatus(issueId: string, nextStatus: string, successText: string) {
+  await iii.trigger({
+    function_id: 'issues::status_set',
+    payload: { issue_id: issueId, status: nextStatus },
+  });
+  showToast(successText, 'success');
+}
+
 // Intercept assign-link clicks before the generic anchor-routing handler picks them up.
 document.addEventListener('click', (e) => {
-  const target = (e.target as Element | null)?.closest?.('[data-action="assign"]') as HTMLElement | null;
+  const target = (e.target as Element | null)?.closest?.('[data-action]') as HTMLElement | null;
   if (!target) return;
+  const action = target.dataset.action;
+  if (!action) return;
   e.preventDefault();
   e.stopPropagation();
-  const issueId = target.dataset.issueId;
+  const issueId = target.dataset.issueId ?? '';
   const issueTitle = target.dataset.issueTitle ?? '';
   if (!issueId) return;
-  openAssignModal(issueId, issueTitle);
+
+  if (action === 'assign') {
+    openAssignModal(issueId, issueTitle);
+    return;
+  }
+  if (action === 'approve') {
+    void updateIssueStatus(issueId, 'done', `Marked "${issueTitle || issueId.slice(0, 8)}" as done`).catch(
+      (err) => showToast(`Approve failed: ${describeError(err)}`, 'error', 5000),
+    );
+    return;
+  }
+  if (action === 'reopen') {
+    void updateIssueStatus(issueId, 'open', `Moved "${issueTitle || issueId.slice(0, 8)}" back to open`).catch(
+      (err) => showToast(`Reopen failed: ${describeError(err)}`, 'error', 5000),
+    );
+  }
 }, true);
+
+document.addEventListener('click', (e) => {
+  const body = (e.target as Element | null)?.closest?.('.turn .turnBody[data-full-text]') as HTMLElement | null;
+  if (!body) return;
+  e.preventDefault();
+  const full = body.dataset.fullText ?? '';
+  const maxTurnChars = Number.parseInt(body.dataset.maxTurnChars ?? '', 10);
+  const previewLimit = Number.isFinite(maxTurnChars) && maxTurnChars > 0
+    ? maxTurnChars
+    : DEFAULT_MAX_TURN_CHARS;
+  const isExpanded = body.dataset.expanded === '1';
+  if (isExpanded) {
+    const short = full.length > previewLimit ? `${full.slice(0, previewLimit)}…` : full;
+    body.textContent = short;
+    body.dataset.expanded = '0';
+    body.dataset.truncated = '1';
+  } else {
+    body.textContent = full;
+    body.dataset.expanded = '1';
+    body.dataset.truncated = '0';
+  }
+});
 
 document.getElementById('btnNewTask')?.addEventListener('click', () => {
   openFormModal({
